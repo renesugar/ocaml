@@ -26,10 +26,6 @@
         EXTRN  caml_program: NEAR
         EXTRN  caml_array_bound_error: NEAR
        EXTRN  caml_stash_backtrace: NEAR
-IFDEF WITH_SPACETIME
-        EXTRN  caml_spacetime_trie_node_ptr: QWORD
-        EXTRN  caml_spacetime_c_to_ocaml: NEAR
-ENDIF
 
 INCLUDE domain_state64.inc
 
@@ -46,21 +42,17 @@ caml_system__code_begin:
         ALIGN   16
 caml_call_gc:
     ; Record lowest stack address and return address
-        mov     rax, [rsp]
-        Store_last_return_address rax
-        lea     rax, [rsp+8]
-        Store_bottom_of_stack rax
-L105:
+        mov     r11, [rsp]
+        Store_last_return_address r11
+        lea     r11, [rsp+8]
+        Store_bottom_of_stack r11
     ; Touch the stack to trigger a recoverable segfault
     ; if insufficient space remains
         sub     rsp, 01000h
-        mov     [rsp], rax
+        mov     [rsp], r11
         add     rsp, 01000h
     ; Save young_ptr
         Store_young_ptr r15
-IFDEF WITH_SPACETIME
-        mov     caml_spacetime_trie_node_ptr, r13
-ENDIF
     ; Build array of registers, save it into Caml_state(gc_regs)
         push    rbp
         push    r11
@@ -139,92 +131,31 @@ ENDIF
 caml_alloc1:
         sub     r15, 16
         Cmp_young_limit r15
-        jb      L100
+        jb      caml_call_gc
         ret
-L100:
-        add     r15, 16
-        mov     rax, [rsp + 0]
-        Store_last_return_address rax
-        lea     rax, [rsp + 8]
-        Store_bottom_of_stack rax
-        sub     rsp, 8
-        call    L105
-        add     rsp, 8
-        jmp     caml_alloc1
 
         PUBLIC  caml_alloc2
         ALIGN   16
 caml_alloc2:
         sub     r15, 24
         Cmp_young_limit r15
-        jb      L101
+        jb      caml_call_gc
         ret
-L101:
-        add     r15, 24
-        mov     rax, [rsp + 0]
-        Store_last_return_address rax
-        lea     rax, [rsp + 8]
-        Store_bottom_of_stack rax
-        sub     rsp, 8
-        call    L105
-        add     rsp, 8
-        jmp     caml_alloc2
 
         PUBLIC  caml_alloc3
         ALIGN   16
 caml_alloc3:
         sub     r15, 32
         Cmp_young_limit r15
-        jb      L102
+        jb      caml_call_gc
         ret
-L102:
-        add     r15, 32
-        mov     rax, [rsp + 0]
-        Store_last_return_address rax
-        lea     rax, [rsp + 8]
-        Store_bottom_of_stack rax
-        sub     rsp, 8
-        call    L105
-        add     rsp, 8
-        jmp     caml_alloc3
 
         PUBLIC  caml_allocN
         ALIGN   16
 caml_allocN:
-        sub     r15, rax
         Cmp_young_limit r15
-        jb      L103
+        jb      caml_call_gc
         ret
-L103:
-        add     r15, rax
-        push    rax                       ; save desired size
-        mov     rax, [rsp + 8]
-        Store_last_return_address rax
-        lea     rax, [rsp + 16]
-        Store_bottom_of_stack rax
-        call    L105
-        pop     rax                      ; recover desired size
-        jmp     caml_allocN
-
-; Reset the allocation pointer and invoke the GC
-
-        PUBLIC  caml_call_gc1
-        ALIGN   16
-caml_call_gc1:
-        add     r15, 16
-        jmp     caml_call_gc
-
-        PUBLIC  caml_call_gc2
-        ALIGN   16
-caml_call_gc2:
-        add     r15, 24
-        jmp     caml_call_gc
-
-        PUBLIC  caml_call_gc3
-        ALIGN 16
-caml_call_gc3:
-        add     r15, 32
-        jmp     caml_call_gc
 
 ; Call a C function from OCaml
 
@@ -235,11 +166,6 @@ caml_c_call:
         pop     r12
         Store_last_return_address r12
         Store_bottom_of_stack rsp
-IFDEF WITH_SPACETIME
-    ; Record the trie node hole pointer that corresponds to
-    ; [Caml_state(last_return_address)]
-        mov     caml_spacetime_trie_node_ptr, r13
-ENDIF
     ; Touch the stack to trigger a recoverable segfault
     ; if insufficient space remains
         sub     rsp, 01000h
@@ -287,29 +213,10 @@ caml_start_program:
     ; Common code for caml_start_program and caml_callback*
 L106:
     ; Build a callback link
-IFDEF WITH_SPACETIME
-        push    caml_spacetime_trie_node_ptr
-ELSE
         sub     rsp, 8  ; stack 16-aligned
-ENDIF
         Push_gc_regs
         Push_last_return_address
         Push_bottom_of_stack
-IFDEF WITH_SPACETIME
-    ; Save arguments to caml_callback
-        push    rax
-        push    rbx
-        push    rdi
-        push    rsi
-    ; No need to push r12: it is callee-save.
-        mov     rcx, r12
-        lea     rdx, caml_start_program
-        call    caml_spacetime_c_to_ocaml
-        pop     rsi
-        pop     rdi
-        pop     rbx
-        pop     rax
-ENDIF
     ; Setup alloc ptr
         Load_young_ptr r15
     ; Build an exception handler
@@ -317,9 +224,6 @@ ENDIF
         push    r13
         Push_exception_pointer
         Store_exception_pointer rsp
-IFDEF WITH_SPACETIME
-        mov     r13, caml_spacetime_trie_node_ptr
-ENDIF
     ; Call the OCaml code
         call    r12
 L107:
@@ -333,11 +237,7 @@ L109:
         Pop_bottom_of_stack
         Pop_last_return_address
         Pop_gc_regs
-IFDEF WITH_SPACETIME
-        pop     caml_spacetime_trie_node_ptr
-ELSE
         add     rsp, 8
-ENDIF
     ; Restore callee-save registers.
         movapd  xmm6, OWORD PTR [rsp + 0*16]
         movapd  xmm7, OWORD PTR [rsp + 1*16]
@@ -534,19 +434,6 @@ caml_system__frametable LABEL QWORD
         WORD    -1          ; negative frame size => use callback link
         WORD    0           ; no roots here
         ALIGN   8
-
-IFDEF WITH_SPACETIME
-        .DATA
-        PUBLIC  caml_system__spacetime_shapes
-        ALIGN   8
-caml_system__spacetime_shapes LABEL QWORD
-        QWORD   caml_start_program
-        QWORD   2         ; indirect call point to OCaml code
-        QWORD   L107      ; in caml_start_program / caml_callback*
-        QWORD   0         ; end of shapes in caml_start_program
-        QWORD   0         ; end of shape table
-        ALIGN   8
-ENDIF
 
         PUBLIC  caml_negf_mask
         ALIGN   16

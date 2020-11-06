@@ -21,8 +21,6 @@
 #include "mlvalues.h"
 #include "exec.h"
 
-CAMLextern void caml_main(char_os **argv);
-
 CAMLextern void caml_startup_code(
            code_t code, asize_t code_size,
            char *data, asize_t data_size,
@@ -37,7 +35,8 @@ CAMLextern value caml_startup_code_exn(
   int pooling,
   char_os **argv);
 
-enum { FILE_NOT_FOUND = -1, BAD_BYTECODE = -2, WRONG_MAGIC = -3 };
+/* These enum members should all be negative */
+enum { FILE_NOT_FOUND = -1, BAD_BYTECODE = -2, WRONG_MAGIC = -3, NO_FDS = -4 };
 
 extern int caml_attempt_open(char_os **name, struct exec_trailer *trail,
                              int do_open_script);
@@ -46,6 +45,14 @@ extern int32_t caml_seek_optional_section(int fd, struct exec_trailer *trail,
                                         char *name);
 extern int32_t caml_seek_section(int fd, struct exec_trailer *trail,
                                  char *name);
+
+enum caml_byte_program_mode
+  {
+   STANDARD /* normal bytecode program requiring "ocamlrun" */,
+   COMPLETE_EXE /* embeding the vm, i.e. compiled with --output-complete-exe */
+  };
+
+extern enum caml_byte_program_mode caml_byte_program_mode;
 
 #endif /* CAML_INTERNALS */
 

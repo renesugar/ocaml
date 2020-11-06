@@ -60,6 +60,8 @@ module type Core_options = sig
 
   val _dno_unique_ids : unit -> unit
   val _dunique_ids : unit -> unit
+  val _dno_locations : unit -> unit
+  val _dlocations : unit -> unit
   val _dsource : unit -> unit
   val _dparsetree : unit -> unit
   val _dtypedtree : unit -> unit
@@ -232,6 +234,7 @@ module type Optcomp_options = sig
   val _afl_instrument : unit -> unit
   val _afl_inst_ratio : int -> unit
   val _function_sections : unit -> unit
+  val _save_ir_after : string -> unit
 end;;
 
 module type Opttop_options = sig

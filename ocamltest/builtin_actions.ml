@@ -62,6 +62,12 @@ let dumpenv = make
   (fun log env ->
     Environments.dump log env; (Result.pass, env))
 
+let hasinstrumentedruntime = make
+  "hasinstrumentedruntime"
+  (Actions_helpers.pass_or_skip (Ocamltest_config.has_instrumented_runtime)
+    "instrumented runtime available"
+    "instrumented runtime not available")
+
 let hasunix = make
   "hasunix"
   (Actions_helpers.pass_or_skip (Ocamltest_config.libunix <> None)
@@ -181,9 +187,15 @@ let function_sections = make
      "Target supports function sections"
      "Target does not support function sections")
 
+let naked_pointers = make
+  "naked_pointers"
+  (Actions_helpers.pass_or_skip (Ocamltest_config.naked_pointers)
+     "Runtime system supports naked pointers"
+     "Runtime system does not support naked pointers")
+
 let has_symlink = make
   "has_symlink"
-  (Actions_helpers.pass_or_skip (Sys.has_symlink () )
+  (Actions_helpers.pass_or_skip (Unix.has_symlink () )
     "symlinks available"
     "symlinks not available")
 
@@ -218,7 +230,7 @@ let initialize_test_exit_status_variables _log env =
   ] env
 
 let _ =
-  Environments.register_initializer
+  Environments.register_initializer Environments.Post
     "test_exit_status_variables" initialize_test_exit_status_variables;
   List.iter register
   [
@@ -227,6 +239,7 @@ let _ =
     fail;
     cd;
     dumpenv;
+    hasinstrumentedruntime;
     hasunix;
     hassysthreads;
     hasstr;
@@ -250,4 +263,5 @@ let _ =
     arch_i386;
     arch_power;
     function_sections;
+    naked_pointers
   ]

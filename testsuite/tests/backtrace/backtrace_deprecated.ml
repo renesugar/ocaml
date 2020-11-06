@@ -1,11 +1,6 @@
 (* TEST
    flags = "-g"
    ocamlrunparam += ",b=1"
-   * bytecode
-     reference = "${test_source_directory}/backtrace_deprecated.byte.reference"
-   * native
-     reference = "${test_source_directory}/backtrace_deprecated.opt.reference"
-     compare_programs = "false"
 *)
 
 (* A test for stack backtraces *)
@@ -40,7 +35,6 @@ let run args =
         trace
 
 let _ =
-  Printexc.record_backtrace true;
   run [| "a" |];
   run [| "b" |];
   run [| "c" |];

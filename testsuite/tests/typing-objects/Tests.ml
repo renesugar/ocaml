@@ -66,6 +66,21 @@ and ['a] d : unit -> object constraint 'a = int #c end
 |}];;
 (* class ['a] c : unit -> object constraint 'a = int end
    and ['a] d : unit -> object constraint 'a = int #c end *)
+(* Class type constraint *)
+module F(X:sig type t end) = struct
+  class type ['a] c = object
+    method m: 'a -> X.t
+  end
+end
+class ['a] c = object
+  constraint 'a = 'a #F(Int).c
+end
+[%%expect {|
+module F :
+  functor (X : sig type t end) ->
+    sig class type ['a] c = object method m : 'a -> X.t end end
+class ['a] c : object constraint 'a = < m : 'a -> Int.t; .. > end
+|}]
 
 (* Self as parameter *)
 class ['a] c (x : 'a) = object (self : 'b)
@@ -179,7 +194,14 @@ and 'a d = <f : int c>;;
 Line 1, characters 0-32:
 1 | type 'a c = <f : 'a c; g : 'a d>
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Error: In the definition of d, type int c should be 'a c
+Error: This recursive type is not regular.
+       The type constructor c is defined as
+         type 'a c
+       but it is used as
+         int c
+       after the following expansion(s):
+         'a d = < f : int c >
+       All uses need to match the definition for the recursive type to be regular.
 |}];;
 type 'a c = <f : 'a c; g : 'a d>
 and 'a d = <f : 'a c>;;
@@ -450,24 +472,24 @@ end;;
 Line 3, characters 10-13:
 3 |   inherit c 5
               ^^^
-Warning 13: the following instance variables are overridden by the class c :
+Warning 13 [instance-variable-override]: the following instance variables are overridden by the class c :
   x
 The behaviour changed in ocaml 3.10 (previous behaviour was hiding.)
 Line 4, characters 6-7:
 4 |   val y = 3
           ^
-Warning 13: the instance variable y is overridden.
+Warning 13 [instance-variable-override]: the instance variable y is overridden.
 The behaviour changed in ocaml 3.10 (previous behaviour was hiding.)
 Line 6, characters 10-13:
 6 |   inherit d 7
               ^^^
-Warning 13: the following instance variables are overridden by the class d :
+Warning 13 [instance-variable-override]: the following instance variables are overridden by the class d :
   t z
 The behaviour changed in ocaml 3.10 (previous behaviour was hiding.)
 Line 7, characters 6-7:
 7 |   val u = 3
           ^
-Warning 13: the instance variable u is overridden.
+Warning 13 [instance-variable-override]: the instance variable u is overridden.
 The behaviour changed in ocaml 3.10 (previous behaviour was hiding.)
 class e :
   unit ->
@@ -769,7 +791,7 @@ fun (x : 'a t) -> (x : 'a); ();;
 Line 1, characters 18-26:
 1 | fun (x : 'a t) -> (x : 'a); ();;
                       ^^^^^^^^
-Warning 10: this expression should have type unit.
+Warning 10 [non-unit-statement]: this expression should have type unit.
 - : ('a t as 'a) t -> unit = <fun>
 |}];;
 

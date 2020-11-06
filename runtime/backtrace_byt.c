@@ -54,7 +54,8 @@ enum {
   EV_POS = 0,
   EV_MODULE = 1,
   EV_LOC = 2,
-  EV_KIND = 3
+  EV_KIND = 3,
+  EV_DEFNAME = 4
 };
 
 /* Location of fields in the Location.t record. */
@@ -77,6 +78,7 @@ enum {
 struct ev_info {
   code_t ev_pc;
   char *ev_filename;
+  char *ev_defname;
   int ev_lnum;
   int ev_startchr;
   int ev_endchr;
@@ -103,10 +105,37 @@ static struct debug_info *find_debug_info(code_t pc)
 
 static int cmp_ev_info(const void *a, const void *b)
 {
-  code_t pc_a = ((const struct ev_info*)a)->ev_pc;
-  code_t pc_b = ((const struct ev_info*)b)->ev_pc;
+  const struct ev_info* ev_a = a;
+  const struct ev_info* ev_b = b;
+  code_t pc_a = ev_a->ev_pc;
+  code_t pc_b = ev_b->ev_pc;
+  int num_a;
+  int num_b;
+
+  /* Perform a full lexicographic comparison to make sure the resulting order is
+     the same under all implementations of qsort (which is not stable). */
+
   if (pc_a > pc_b) return 1;
   if (pc_a < pc_b) return -1;
+
+  num_a = ev_a->ev_lnum;
+  num_b = ev_b->ev_lnum;
+
+  if (num_a > num_b) return 1;
+  if (num_a < num_b) return -1;
+
+  num_a = ev_a->ev_startchr;
+  num_b = ev_b->ev_startchr;
+
+  if (num_a > num_b) return 1;
+  if (num_a < num_b) return -1;
+
+  num_a = ev_a->ev_endchr;
+  num_b = ev_b->ev_endchr;
+
+  if (num_a > num_b) return 1;
+  if (num_a < num_b) return -1;
+
   return 0;
 }
 
@@ -143,13 +172,20 @@ static struct ev_info *process_debug_events(code_t code_start,
       ev_start = Field(Field(ev, EV_LOC), LOC_START);
 
       {
-        uintnat fnsz = caml_string_length(Field(ev_start, POS_FNAME)) + 1;
-        events[j].ev_filename = (char*)caml_stat_alloc_noexc(fnsz);
+        const char *fname = String_val(Field(ev_start, POS_FNAME));
+        events[j].ev_filename = caml_stat_strdup_noexc(fname);
         if(events[j].ev_filename == NULL)
           caml_fatal_error ("caml_add_debug_info: out of memory");
-        memcpy(events[j].ev_filename,
-            String_val(Field(ev_start, POS_FNAME)),
-            fnsz);
+      }
+
+      if (Is_block(Field(ev, EV_DEFNAME)) &&
+          Tag_val(Field(ev, EV_DEFNAME)) == String_tag) {
+        const char *dname = String_val(Field(ev, EV_DEFNAME));
+        events[j].ev_defname = caml_stat_strdup_noexc(dname);
+        if (events[j].ev_defname == NULL)
+          caml_fatal_error ("caml_add_debug_info: out of memory");
+      } else {
+        events[j].ev_defname = "<old bytecode>";
       }
 
       events[j].ev_lnum = Int_val(Field(ev_start, POS_LNUM));
@@ -247,7 +283,9 @@ void caml_stash_backtrace(value exn, value * sp, int reraise)
   /* Traverse the stack and put all values pointing into bytecode
      into the backtrace buffer. */
   for (/*nothing*/; sp < Caml_state->trapsp; sp++) {
-    code_t p = (code_t) *sp;
+    code_t p;
+    if (Is_long(*sp)) continue;
+    p = (code_t) *sp;
     if (Caml_state->backtrace_pos >= BACKTRACE_BUFFER_SIZE) break;
     if (find_debug_info(p) != NULL)
       Caml_state->backtrace_buffer[Caml_state->backtrace_pos++] = p;
@@ -261,9 +299,12 @@ void caml_stash_backtrace(value exn, value * sp, int reraise)
 code_t caml_next_frame_pointer(value ** sp, value ** trsp)
 {
   while (*sp < Caml_state->stack_high) {
-    code_t *p = (code_t*) (*sp)++;
+    value *spv = (*sp)++;
+    code_t *p;
+    if (Is_long(*spv)) continue;
+    p = (code_t*) spv;
     if(&Trap_pc(*trsp) == p) {
-      *trsp = Trap_link(*trsp);
+      *trsp = *trsp + Long_val(Trap_link_offset(*trsp));
       continue;
     }
 
@@ -273,32 +314,38 @@ code_t caml_next_frame_pointer(value ** sp, value ** trsp)
   return NULL;
 }
 
-intnat caml_current_callstack_size(intnat max_frames)
+#define Default_callstack_size 32
+intnat caml_collect_current_callstack(value** ptrace, intnat* plen,
+                                      intnat max_frames, int alloc_idx)
 {
-  intnat trace_size;
   value * sp = Caml_state->extern_sp;
   value * trsp = Caml_state->trapsp;
+  intnat trace_pos = 0;
+  CAMLassert(alloc_idx == 0 || alloc_idx == -1);
 
-  for (trace_size = 0; trace_size < max_frames; trace_size++) {
+  if (max_frames <= 0) return 0;
+  if (*plen == 0) {
+    value* trace =
+      caml_stat_alloc_noexc(Default_callstack_size * sizeof(value));
+    if (trace == NULL) return 0;
+    *ptrace = trace;
+    *plen = Default_callstack_size;
+  }
+
+  while (trace_pos < max_frames) {
     code_t p = caml_next_frame_pointer(&sp, &trsp);
     if (p == NULL) break;
+    if (trace_pos == *plen) {
+      intnat new_len = *plen * 2;
+      value * trace = caml_stat_resize_noexc(*ptrace, new_len * sizeof(value));
+      if (trace == NULL) break;
+      *ptrace = trace;
+      *plen = new_len;
+    }
+    (*ptrace)[trace_pos++] = Val_backtrace_slot(p);
   }
 
-  return trace_size;
-}
-
-void caml_current_callstack_write(value trace) {
-  value * sp = Caml_state->extern_sp;
-  value * trsp = Caml_state->trapsp;
-  uintnat trace_pos, trace_size = Wosize_val(trace);
-
-  for (trace_pos = 0; trace_pos < trace_size; trace_pos++) {
-    code_t p = caml_next_frame_pointer(&sp, &trsp);
-    CAMLassert(p != NULL);
-    /* [Val_backtrace_slot(...)] is always a long, no need to call
-       [caml_modify]. */
-    Field(trace, trace_pos) = Val_backtrace_slot(p);
-  }
+  return trace_pos;
 }
 
 /* Read the debugging info contained in the current bytecode executable. */
@@ -315,6 +362,14 @@ static void read_main_debug_info(struct debug_info *di)
   CAMLassert(di->already_read == 0);
   di->already_read = 1;
 
+  /* At the moment, bytecode programs built with --output-complete-exe
+     do not contain any debug info.
+
+     See  https://github.com/ocaml/ocaml/issues/9344 for details.
+  */
+  if (caml_cds_file == NULL && caml_byte_program_mode == COMPLETE_EXE)
+    CAMLreturn0;
+
   if (caml_cds_file != NULL) {
     exec_name = caml_cds_file;
   } else {
@@ -322,8 +377,9 @@ static void read_main_debug_info(struct debug_info *di)
   }
 
   fd = caml_attempt_open(&exec_name, &trail, 1);
-  if (fd < 0){
-    caml_fatal_error ("executable program file not found");
+  if (fd < 0) {
+    /* Record the failure of caml_attempt_open in di->already-read */
+    di->already_read = fd;
     CAMLreturn0;
   }
 
@@ -331,6 +387,7 @@ static void read_main_debug_info(struct debug_info *di)
   if (caml_seek_optional_section(fd, &trail, "DBUG") != -1) {
     chan = caml_open_descriptor_in(fd);
 
+    Lock(chan);
     num_events = caml_getword(chan);
     events = caml_alloc(num_events, 0);
 
@@ -346,10 +403,13 @@ static void read_main_debug_info(struct debug_info *di)
       /* Record event list */
       Store_field(events, i, evl);
     }
+    Unlock(chan);
 
     caml_close_channel(chan);
 
     di->events = process_debug_events(caml_start_code, events, &di->num_events);
+  } else {
+    close(fd);
   }
 
   CAMLreturn0;
@@ -361,9 +421,25 @@ CAMLexport void caml_init_debug_info(void)
   caml_add_debug_info(caml_start_code, Val_long(caml_code_size), Val_unit);
 }
 
+CAMLexport void caml_load_main_debug_info(void)
+{
+  if (Caml_state->backtrace_active > 1) {
+    read_main_debug_info(caml_debug_info.contents[0]);
+  }
+}
+
 int caml_debug_info_available(void)
 {
   return (caml_debug_info.size != 0);
+}
+
+int caml_debug_info_status(void)
+{
+  if (!caml_debug_info_available()) {
+    return 0;
+  } else {
+    return ((struct debug_info *)caml_debug_info.contents[0])->already_read;
+  }
 }
 
 /* Search the event index for the given PC.  Return -1 if not found. */
@@ -418,6 +494,7 @@ void caml_debuginfo_location(debuginfo dbg,
   li->loc_valid = 1;
   li->loc_is_inlined = 0;
   li->loc_filename = event->ev_filename;
+  li->loc_defname = event->ev_defname;
   li->loc_lnum = event->ev_lnum;
   li->loc_startchr = event->ev_startchr;
   li->loc_endchr = event->ev_endchr;

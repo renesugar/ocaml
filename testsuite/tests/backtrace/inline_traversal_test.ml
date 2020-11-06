@@ -2,15 +2,10 @@
    flags = "-g"
    ocamlrunparam += ",b=1"
    * bytecode
-     reference = "${test_source_directory}/inline_traversal_test.byte.reference"
    * native
-     reference = "${test_source_directory}/inline_traversal_test.opt.reference"
-     compare_programs = "false"
    * native
      ocamlopt_flags = "-O3"
      compiler_directory_suffix = ".O3"
-     reference = "${test_source_directory}/inline_traversal_test.opt.reference"
-     compare_programs = "false"
 *)
 
 (* A test for inlined stack backtraces *)
@@ -29,7 +24,6 @@ let i x =
 
 let () =
   let open Printexc in
-  record_backtrace true;
   try i ()
   with _ ->
     let trace = get_raw_backtrace () in

@@ -28,6 +28,38 @@ let overwrite o n =
     Obj.set_field o i (Obj.field n i)
   done
 
+let overwrite_closure o n =
+  (* We need to use the [raw_field] functions at least on the code
+     pointer, which is not a valid value in -no-naked-pointers
+     mode. *)
+  assert (Obj.tag n = Obj.closure_tag);
+  assert (Obj.size o >= Obj.size n);
+  let n_start_env = Obj.Closure.((info n).start_env) in
+  let o_start_env = Obj.Closure.((info o).start_env) in
+  (* if the environment of n starts before the one of o,
+     clear the raw fields in between. *)
+  for i = n_start_env to o_start_env - 1 do
+    Obj.set_raw_field o i Nativeint.one
+  done;
+  (* if the environment of o starts before the one of n,
+     clear the environment fields in between. *)
+  for i = o_start_env to n_start_env - 1 do
+    Obj.set_field o i (Obj.repr ())
+  done;
+  for i = 0 to n_start_env - 1 do
+    (* code pointers, closure info fields, infix headers *)
+    Obj.set_raw_field o i (Obj.raw_field n i)
+  done;
+  for i = n_start_env to Obj.size n - 1 do
+    (* environment fields *)
+    Obj.set_field o i (Obj.field n i)
+  done;
+  for i = Obj.size n to Obj.size o - 1 do
+    (* clear the leftover space *)
+    Obj.set_field o i (Obj.repr ())
+  done;
+  ()
+
 let rec init_mod loc shape =
   match shape with
   | Function ->
@@ -37,7 +69,7 @@ let rec init_mod loc shape =
       let template =
         Obj.repr (fun _ -> raise (Undefined_recursive_module loc))
       in
-      overwrite closure template;
+      overwrite_closure closure template;
       closure
   | Lazy ->
       Obj.repr (lazy (raise (Undefined_recursive_module loc)))
@@ -51,14 +83,18 @@ let rec init_mod loc shape =
 let rec update_mod shape o n =
   match shape with
   | Function ->
-      (* The optimisation below is invalid on bytecode since
-         the RESTART instruction checks the length of closures.
-         See PR#4008 *)
-      if Sys.backend_type = Sys.Native
-      && Obj.tag n = Obj.closure_tag
-      && Obj.size n <= Obj.size o
-      then begin overwrite o n end
-      else overwrite o (Obj.repr (fun x -> (Obj.obj n : _ -> _) x))
+      (* In bytecode, the RESTART instruction checks the size of closures.
+         Hence, the optimized case [overwrite o n] is valid only if [o] and
+         [n] have the same size.  (See PR#4008.)
+         In native code, the size of closures does not matter, so overwriting
+         is possible so long as the size of [n] is no greater than that of [o].
+      *)
+      if Obj.tag n = Obj.closure_tag
+      && (Obj.size n = Obj.size o
+          || (Sys.backend_type = Sys.Native
+              && Obj.size n <= Obj.size o))
+      then begin overwrite_closure o n end
+      else overwrite_closure o (Obj.repr (fun x -> (Obj.obj n : _ -> _) x))
   | Lazy ->
       if Obj.tag n = Obj.lazy_tag then
         Obj.set_field o 0 (Obj.field n 0)

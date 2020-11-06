@@ -18,6 +18,8 @@
 open Asttypes
 open Types
 
+module TypePairs : Hashtbl.S with type key = type_expr * type_expr
+
 module Unification_trace: sig
   (** Unification traces are used to explain unification errors
       when printing error messages *)
@@ -132,8 +134,24 @@ val repr: type_expr -> type_expr
 val object_fields: type_expr -> type_expr
 val flatten_fields:
         type_expr -> (string * field_kind * type_expr) list * type_expr
-        (* Transform a field type into a list of pairs label-type *)
-        (* The fields are sorted *)
+(** Transform a field type into a list of pairs label-type.
+    The fields are sorted.
+
+    Beware of the interaction with GADTs:
+
+    Due to the introduction of object indexes for GADTs, the row variable of
+    an object may now be an expansible type abbreviation.
+    A first consequence is that [flatten_fields] will not completely flatten
+    the object, since the type abbreviation will not be expanded
+    ([flatten_fields] does not receive the current environment).
+    Another consequence is that various functions may be called with the
+    expansion of this type abbreviation, which is a Tfield, e.g. during
+    printing.
+
+    Concrete problems have been fixed, but new bugs may appear in the
+    future. (Test cases were added to typing-gadts/test.ml)
+*)
+
 val associate_fields:
         (string * field_kind * type_expr) list ->
         (string * field_kind * type_expr) list ->
@@ -173,6 +191,8 @@ val limited_generalize: type_expr -> type_expr -> unit
         (* Only generalize some part of the type
            Make the remaining of the type non-generalizable *)
 
+val fully_generic: type_expr -> bool
+
 val check_scope_escape : Env.t -> int -> type_expr -> unit
         (* [check_scope_escape env lvl ty] ensures that [ty] could be raised
            to the level [lvl] without any scope escape.
@@ -207,6 +227,7 @@ val instance_poly:
         ?keep_names:bool ->
         bool -> type_expr list -> type_expr -> type_expr list * type_expr
         (* Take an instance of a type scheme containing free univars *)
+val polyfy: Env.t -> type_expr -> type_expr list -> type_expr * bool
 val instance_label:
         bool -> label_description -> type_expr list * type_expr * type_expr
         (* Same, for a label *)
@@ -235,14 +256,14 @@ val enforce_constraints: Env.t -> type_expr -> unit
 val unify: Env.t -> type_expr -> type_expr -> unit
         (* Unify the two types given. Raise [Unify] if not possible. *)
 val unify_gadt:
-        equations_level:int -> Env.t ref -> type_expr -> type_expr -> unit
+        equations_level:int -> allow_recursive:bool ->
+        Env.t ref -> type_expr -> type_expr -> unit TypePairs.t
         (* Unify the two types given and update the environment with the
-           local constraints. Raise [Unify] if not possible. *)
+           local constraints. Raise [Unify] if not possible.
+           Returns the pairs of types that have been equated.  *)
 val unify_var: Env.t -> type_expr -> type_expr -> unit
         (* Same as [unify], but allow free univars when first type
            is a variable. *)
-val with_passive_variants: ('a -> 'b) -> ('a -> 'b)
-        (* Call [f] in passive_variants mode, for exhaustiveness check. *)
 val filter_arrow: Env.t -> type_expr -> arg_label -> type_expr * type_expr
         (* A special case of unification (with l:'a -> 'b). *)
 val filter_method: Env.t -> string -> private_flag -> type_expr -> type_expr
@@ -265,7 +286,7 @@ val matches: Env.t -> type_expr -> type_expr -> bool
         (* Same as [moregeneral false], implemented using the two above
            functions and backtracking. Ignore levels *)
 
-val reify_univars : Types.type_expr -> Types.type_expr
+val reify_univars : Env.t -> Types.type_expr -> Types.type_expr
         (* Replaces all the variables of a type by a univar. *)
 
 type class_match_failure =

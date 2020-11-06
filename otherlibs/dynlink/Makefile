@@ -21,23 +21,20 @@
 
 ROOTDIR = ../..
 
-include $(ROOTDIR)/Makefile.config
 include $(ROOTDIR)/Makefile.common
 include $(ROOTDIR)/Makefile.best_binaries
 
-CAMLRUN ?= $(ROOTDIR)/boot/ocamlrun
+CAMLRUN ?= $(ROOTDIR)/boot/ocamlrun$(EXE)
 
-OCAMLC=$(BEST_OCAMLC) -nostdlib -I $(ROOTDIR)/stdlib
-OCAMLOPT=$(BEST_OCAMLOPT) -nostdlib -I $(ROOTDIR)/stdlib
+OCAMLC=$(BEST_OCAMLC) -g -nostdlib -I $(ROOTDIR)/stdlib
+OCAMLOPT=$(BEST_OCAMLOPT) -g -nostdlib -I $(ROOTDIR)/stdlib
 
 # COMPFLAGS should be in sync with the toplevel Makefile's COMPFLAGS.
 COMPFLAGS=-strict-sequence -principal -absname -w +a-4-9-40-41-42-44-45-48-66 \
 	  -warn-error A \
           -bin-annot -safe-string -strict-formats
 ifeq "$(FLAMBDA)" "true"
-OPTCOMPFLAGS=-O3
-else
-OPTCOMPFLAGS=
+OPTCOMPFLAGS += -O3
 endif
 
 COMPFLAGS += -I byte
@@ -76,6 +73,7 @@ COMPILERLIBS_INTFS=\
 
 # .ml files from compilerlibs that have corresponding .mli files.
 COMPILERLIBS_SOURCES=\
+  utils/binutils.ml \
   utils/config.ml \
   utils/build_path_prefix_map.ml \
   utils/misc.ml \
@@ -87,7 +85,9 @@ COMPILERLIBS_SOURCES=\
   utils/consistbl.ml \
   utils/terminfo.ml \
   utils/warnings.ml \
+  utils/local_store.ml \
   utils/load_path.ml \
+  utils/int_replace_polymorphic_compare.ml \
   parsing/location.ml \
   parsing/longident.ml \
   parsing/docstrings.ml \
@@ -108,6 +108,7 @@ COMPILERLIBS_SOURCES=\
   file_formats/cmi_format.ml \
   typing/persistent_env.ml \
   typing/env.ml \
+  lambda/debuginfo.ml \
   lambda/lambda.ml \
   lambda/runtimedef.ml \
   bytecomp/instruct.ml \
@@ -120,6 +121,7 @@ COMPILERLIBS_SOURCES=\
 # Rules to make a local copy of the .ml and .mli files required.  We also
 # provide .ml files for .mli-only modules---without this, such modules do
 # not seem to be located by the type checker inside bytecode packs.
+# Note: .ml-only modules are not supported by the (.mli.cmi) rule below.
 
 $(LOCAL_SRC)/Makefile: $(LOCAL_SRC)/Makefile.copy-sources Makefile
 	cp -f $< $@
@@ -171,15 +173,15 @@ COMPILERLIBS_COPIED_SOURCES_INTFS=\
 COMPILERLIBS_CMO=$(COMPILERLIBS_COPIED_SOURCES:.ml=.cmo)
 COMPILERLIBS_CMX=$(COMPILERLIBS_COPIED_SOURCES:.ml=.cmx)
 
-$(LOCAL_SRC)/%.cmi:
+$(LOCAL_SRC)/%.cmi: $(LOCAL_SRC)/%.mli
 	$(OCAMLC) -c -for-pack Dynlink_compilerlibs $(COMPFLAGS) \
           -I $(LOCAL_SRC) -o $@ $(LOCAL_SRC)/$*.mli
 
-$(LOCAL_SRC)/%.cmo:
+$(LOCAL_SRC)/%.cmo: $(LOCAL_SRC)/%.ml
 	$(OCAMLC) -c -for-pack Dynlink_compilerlibs $(COMPFLAGS) \
           -I $(LOCAL_SRC) -o $@ $(LOCAL_SRC)/$*.ml
 
-$(LOCAL_SRC)/%.cmx:
+$(LOCAL_SRC)/%.cmx: $(LOCAL_SRC)/%.ml
 	$(OCAMLOPT) -c -for-pack Dynlink_compilerlibs $(COMPFLAGS) \
           $(OPTCOMPFLAGS) -I $(LOCAL_SRC) -o $@ $(LOCAL_SRC)/$*.ml
 
@@ -204,7 +206,9 @@ native/dynlink_compilerlibs.cmx: $(COMPILERLIBS_CMX)
 
 # The main dynlink rules start here.
 
-all: dynlink.cma extract_crc
+extract_crc := extract_crc$(EXE)
+
+all: dynlink.cma $(extract_crc)
 
 allopt: dynlink.cmxa
 
@@ -228,7 +232,9 @@ dynlink.cmxa: $(NATOBJS)
 dynlink_platform_intf.mli: dynlink_platform_intf.ml
 	cp $< $@
 
-extract_crc: dynlink.cma byte/dynlink_compilerlibs.cmo extract_crc.cmo
+$(eval $(call PROGRAM_SYNONYM,extract_crc))
+
+$(extract_crc): dynlink.cma byte/dynlink_compilerlibs.cmo extract_crc.cmo
 	$(OCAMLC) -o $@ $^
 
 install:
@@ -240,8 +246,7 @@ ifeq "$(INSTALL_SOURCE_ARTIFACTS)" "true"
 	  dynlink.cmti dynlink.mli \
 	  "$(INSTALL_LIBDIR)"
 endif
-	$(INSTALL_PROG) \
-	  extract_crc "$(INSTALL_LIBDIR)/extract_crc$(EXE)"
+	$(INSTALL_PROG) $(extract_crc) "$(INSTALL_LIBDIR)"
 
 installopt:
 	if $(NATDYNLINK); then \
@@ -252,13 +257,15 @@ installopt:
 	fi
 
 partialclean:
-	rm -f extract_crc *.cm[ioaxt] *.cmti *.cmxa \
+	rm -f $(extract_crc) *.cm[ioaxt] *.cmti *.cmxa \
 	      byte/*.cm[iot] byte/*.cmti \
-	      native/*.cm[ixt] native/*.cmti native/*.$(O) \
-	      $(LOCAL_SRC)/*.cm[ioaxt] $(LOCAL_SRC)/*.cmti $(LOCAL_SRC)/*.$(O)
+	      native/*.cm[ixt] native/*.cmti native/*.o native/*.obj \
+	      $(LOCAL_SRC)/*.cm[ioaxt] $(LOCAL_SRC)/*.cmti \
+        $(LOCAL_SRC)/*.o $(LOCAL_SRC)/*.obj
 
 clean: partialclean
-	rm -f *.$(A) *.$(O) *.so *.dll dynlink_platform_intf.mli \
+	rm -f extract_crc extract_crc.exe
+	rm -f *.a *.lib *.o *.obj *.so *.dll dynlink_platform_intf.mli \
 	      $(LOCAL_SRC)/*.ml $(LOCAL_SRC)/*.mli $(LOCAL_SRC)/Makefile \
 	      $(LOCAL_SRC)/.depend byte/dynlink.mli native/dynlink.mli
 
@@ -266,10 +273,6 @@ clean: partialclean
 beforedepend: dynlink_platform_intf.mli
 
 .PHONY: depend
-ifeq "$(TOOLCHAIN)" "msvc"
-depend:
-	$(error Dependencies cannot be regenerated using the MSVC ports)
-else
 DEPEND_DUMMY_FILES=\
   native/dynlink_compilerlibs.ml \
   byte/dynlink_compilerlibs.mli \
@@ -283,11 +286,10 @@ depend: beforedepend
 	$(CAMLRUN) $(ROOTDIR)/boot/ocamlc -depend -slash \
 	  -I native -native *.ml native/dynlink.ml >> .depend
 	rm -f $(DEPEND_DUMMY_FILES)
-endif
 
 include .depend
 
-.SUFFIXES: .ml .mli .cmi .cmo .cmx .$(O)
+.SUFFIXES: .ml .mli .cmi .cmo .cmx
 
 .mli.cmi:
 	$(OCAMLC) -c $(COMPFLAGS) $<

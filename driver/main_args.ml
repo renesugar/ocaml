@@ -33,7 +33,7 @@ let mk_absname f =
 ;;
 
 let mk_annot f =
-  "-annot", Arg.Unit f, " Save information in <filename>.annot"
+  "-annot", Arg.Unit f, " (deprecated) Save information in <filename>.annot"
 ;;
 
 let mk_binannot f =
@@ -106,10 +106,24 @@ let mk_function_sections f =
     "-function-sections", Arg.Unit err, " (option not available)"
 ;;
 
-let mk_stop_after f =
-  "-stop-after", Arg.Symbol (Clflags.Compiler_pass.pass_names, f),
+let mk_stop_after ~native f =
+  let pass_names = Clflags.Compiler_pass.available_pass_names
+                     ~filter:(fun _ -> true)
+                     ~native
+  in
+  "-stop-after", Arg.Symbol (pass_names, f),
   " Stop after the given compilation pass."
 ;;
+
+let mk_save_ir_after ~native f =
+  let pass_names =
+    Clflags.Compiler_pass.(available_pass_names
+                             ~filter:can_save_ir_after
+                             ~native)
+  in
+  "-save-ir-after", Arg.Symbol (pass_names, f),
+  " Save intermediate representation after the given compilation pass\
+    (may be specified more than once)."
 
 let mk_dtypes f =
   "-dtypes", Arg.Unit f, " (deprecated) same as -annot"
@@ -705,6 +719,14 @@ let mk_dunique_ids f =
   "-dunique-ids", Arg.Unit f, " (undocumented)"
 ;;
 
+let mk_dno_locations f =
+  "-dno-locations", Arg.Unit f, " (undocumented)"
+;;
+
+let mk_dlocations f =
+  "-dlocations", Arg.Unit f, " (undocumented)"
+;;
+
 let mk_dsource f =
   "-dsource", Arg.Unit f, " (undocumented)"
 ;;
@@ -921,6 +943,9 @@ module type Core_options = sig
 
   val _dno_unique_ids : unit -> unit
   val _dunique_ids : unit -> unit
+  val _dno_locations : unit -> unit
+  val _dlocations : unit -> unit
+
   val _dsource : unit -> unit
   val _dparsetree : unit -> unit
   val _dtypedtree : unit -> unit
@@ -1093,6 +1118,7 @@ module type Optcomp_options = sig
   val _afl_instrument : unit -> unit
   val _afl_inst_ratio : int -> unit
   val _function_sections : unit -> unit
+  val _save_ir_after : string -> unit
 end;;
 
 module type Opttop_options = sig
@@ -1141,7 +1167,7 @@ struct
     mk_dtypes F._annot;
     mk_for_pack_byt F._for_pack;
     mk_g_byt F._g;
-    mk_stop_after F._stop_after;
+    mk_stop_after ~native:false F._stop_after;
     mk_i F._i;
     mk_I F._I;
     mk_impl F._impl;
@@ -1213,6 +1239,8 @@ struct
     mk_use_prims F._use_prims;
     mk_dno_unique_ids F._dno_unique_ids;
     mk_dunique_ids F._dunique_ids;
+    mk_dno_locations F._dno_locations;
+    mk_dlocations F._dlocations;
     mk_dsource F._dsource;
     mk_dparsetree F._dparsetree;
     mk_dtypedtree F._dtypedtree;
@@ -1278,6 +1306,8 @@ struct
 
     mk_dno_unique_ids F._dno_unique_ids;
     mk_dunique_ids F._dunique_ids;
+    mk_dno_locations F._dno_locations;
+    mk_dlocations F._dlocations;
     mk_dsource F._dsource;
     mk_dparsetree F._dparsetree;
     mk_dtypedtree F._dtypedtree;
@@ -1316,7 +1346,8 @@ struct
     mk_for_pack_opt F._for_pack;
     mk_g_opt F._g;
     mk_function_sections F._function_sections;
-    mk_stop_after F._stop_after;
+    mk_stop_after ~native:true F._stop_after;
+    mk_save_ir_after ~native:true F._save_ir_after;
     mk_i F._i;
     mk_I F._I;
     mk_impl F._impl;
@@ -1405,6 +1436,8 @@ struct
     mk_match_context_rows F._match_context_rows;
     mk_dno_unique_ids F._dno_unique_ids;
     mk_dunique_ids F._dunique_ids;
+    mk_dno_locations F._dno_locations;
+    mk_dlocations F._dlocations;
     mk_dsource F._dsource;
     mk_dparsetree F._dparsetree;
     mk_dtypedtree F._dtypedtree;
@@ -1606,6 +1639,7 @@ let options_with_command_line_syntax_inner r after_rest =
       if not !after_rest then (after_rest := true; option ());
       arg a
     in
+    let rest_all a = option (); List.iter arg a in
     match spec with
     | Unit f -> Unit (fun a -> f a; option ())
     | Bool f -> Bool (fun a -> f a; option_with_arg (string_of_bool a))
@@ -1623,6 +1657,7 @@ let options_with_command_line_syntax_inner r after_rest =
        Tuple (loop ~name_opt hd :: List.map (loop ~name_opt:None) tl)
     | Symbol (l, f) -> Symbol (l, (fun a -> f a; option_with_arg a))
     | Rest f -> Rest (fun a -> f a; rest a)
+    | Rest_all f -> Rest_all (fun a -> f a; rest_all a)
     | Expand f -> Expand f
   in
   loop
@@ -1637,7 +1672,6 @@ let options_with_command_line_syntax options r =
 
 module Default = struct
   open Clflags
-  open Compenv
   let set r () = r := true
   let clear r () = r := false
 
@@ -1668,7 +1702,7 @@ module Default = struct
     let _unsafe_string = set unsafe_string
     let _w s = Warnings.parse_options false s
 
-    let anonymous = anonymous
+    let anonymous = Compenv.anonymous
 
   end
 
@@ -1677,16 +1711,18 @@ module Default = struct
     let _I dir = include_dirs := (dir :: (!include_dirs))
     let _color = Misc.set_or_ignore color_reader.parse color
     let _dlambda = set dump_lambda
-    let _dno_unique_ids = clear unique_ids
     let _dparsetree = set dump_parsetree
     let _drawlambda = set dump_rawlambda
     let _dsource = set dump_source
     let _dtypedtree = set dump_typedtree
     let _dunique_ids = set unique_ids
+    let _dno_unique_ids = clear unique_ids
+    let _dlocations = set locations
+    let _dno_locations = clear locations
     let _error_style =
       Misc.set_or_ignore error_style_reader.parse error_style
     let _nopervasives = set nopervasives
-    let _ppx s = first_ppx := (s :: (!first_ppx))
+    let _ppx s = Compenv.first_ppx := (s :: (!Compenv.first_ppx))
     let _unsafe = set unsafe
     let _warn_error s = Warnings.parse_options true s
     let _warn_help = Warnings.help_warnings
@@ -1804,8 +1840,8 @@ module Default = struct
     let _binannot = set binary_annotations
     let _c = set compile_only
     let _cc s = c_compiler := (Some s)
-    let _cclib s = defer (ProcessObjects (Misc.rev_split_words s))
-    let _ccopt s = first_ccopts := (s :: (!first_ccopts))
+    let _cclib s = Compenv.defer (ProcessObjects (Misc.rev_split_words s))
+    let _ccopt s = Compenv.first_ccopts := (s :: (!Compenv.first_ccopts))
     let _config = Misc.show_config_and_exit
     let _config_var = Misc.show_config_variable_and_exit
     let _dprofile () = profile_columns := Profile.all_columns
@@ -1813,13 +1849,9 @@ module Default = struct
     let _dump_into_file = set dump_into_file
     let _for_pack s = for_package := (Some s)
     let _g = set debug
-    let _i () =
-      print_types := true;
-      compile_only := true;
-      stop_after := (Some Compiler_pass.Typing);
-      ()
-    let _impl = impl
-    let _intf = intf
+    let _i = set print_types
+    let _impl = Compenv.impl
+    let _intf = Compenv.intf
     let _intf_suffix s = Config.interface_suffix := s
     let _keep_docs = set keep_docs
     let _keep_locs = set keep_locs
@@ -1839,14 +1871,22 @@ module Default = struct
         match P.of_string pass with
         | None -> () (* this should not occur as we use Arg.Symbol *)
         | Some pass ->
-            stop_after := (Some pass);
-            match pass with
-            | P.Parsing | P.Typing -> compile_only := true
+          match !stop_after with
+          | None -> stop_after := (Some pass)
+          | Some p ->
+            if not (p = pass) then
+              Compenv.fatal "Please specify at most one -stop-after <pass>."
+    let _save_ir_after pass =
+      let module P = Compiler_pass in
+        match P.of_string pass with
+        | None -> () (* this should not occur as we use Arg.Symbol *)
+        | Some pass ->
+          set_save_ir_after pass true
     let _thread = set use_threads
     let _verbose = set verbose
-    let _version () = print_version_string ()
-    let _vnum () = print_version_string ()
-    let _where () = print_standard_library ()
+    let _version () = Compenv.print_version_string ()
+    let _vnum () = Compenv.print_version_string ()
+    let _where () = Compenv.print_standard_library ()
     let _with_runtime = set with_runtime
     let _without_runtime = clear with_runtime
   end
@@ -1855,12 +1895,12 @@ module Default = struct
 
     let print_version () =
       Printf.printf "The OCaml toplevel, version %s\n" Sys.ocaml_version;
-      exit 0;
+      raise (Compenv.Exit_with_status 0);
     ;;
 
     let print_version_num () =
       Printf.printf "%s\n" Sys.ocaml_version;
-      exit 0;
+      raise (Compenv.Exit_with_status 0);
     ;;
 
     let _args (_:string) = (* placeholder: wrap_expand Arg.read_arg *) [||]
@@ -1895,18 +1935,18 @@ module Default = struct
     let _afl_instrument = set afl_instrument
     let _function_sections () =
       assert Config.function_sections;
-      first_ccopts := ("-ffunction-sections" :: (!first_ccopts));
+      Compenv.first_ccopts := ("-ffunction-sections" ::(!Compenv.first_ccopts));
       function_sections := true
     let _nodynlink = clear dlcode
     let _output_complete_obj () =
       set output_c_object (); set output_complete_object ()
     let _output_obj = set output_c_object
     let _p () =
-      fatal
+      Compenv.fatal
         "Profiling with \"gprof\" (option `-p') is only supported up to \
          OCaml 4.08.0"
     let _shared () = shared := true; dlcode := true
-    let _v () = print_version_and_library "native-code compiler"
+    let _v () = Compenv.print_version_and_library "native-code compiler"
   end
 
   module Odoc_args = struct
@@ -1947,7 +1987,7 @@ third-party libraries such as Lwt, but with a different API."
     let _custom = set custom_runtime
     let _dcamlprimc = set keep_camlprimc_file
     let _dinstr = set dump_instr
-    let _dllib s = defer (ProcessDLLs (Misc.rev_split_words s))
+    let _dllib s = Compenv.defer (ProcessDLLs (Misc.rev_split_words s))
     let _dllpath s = dllpaths := ((!dllpaths) @ [s])
     let _make_runtime () =
       custom_runtime := true; make_runtime := true; link_everything := true
@@ -1961,8 +2001,8 @@ third-party libraries such as Lwt, but with a different API."
     let _output_obj () = output_c_object := true; custom_runtime := true
     let _use_prims s = use_prims := s
     let _use_runtime s = use_runtime := s
-    let _v () = print_version_and_library "compiler"
-    let _vmthread () = fatal vmthread_removed_message
+    let _v () = Compenv.print_version_and_library "compiler"
+    let _vmthread () = Compenv.fatal vmthread_removed_message
   end
 
 end

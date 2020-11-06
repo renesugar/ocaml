@@ -39,6 +39,21 @@ let machtype ppf mty =
            fprintf ppf "*%a" machtype_component mty.(i)
          done
 
+let exttype ppf = function
+  | XInt -> fprintf ppf "int"
+  | XInt32 -> fprintf ppf "int32"
+  | XInt64 -> fprintf ppf "int64"
+  | XFloat -> fprintf ppf "float"
+
+let extcall_signature ppf (ty_res, ty_args) =
+  begin match ty_args with
+  | [] -> ()
+  | ty_arg1 :: ty_args ->
+      exttype ppf ty_arg1;
+      List.iter (fun ty -> fprintf ppf ",%a" exttype ty) ty_args
+  end;
+  fprintf ppf "->%a" machtype ty_res
+
 let integer_comparison = function
   | Ceq -> "=="
   | Cne -> "!="
@@ -95,13 +110,17 @@ let phantom_defining_expr_opt ppf defining_expr =
   | None -> Format.pp_print_string ppf "()"
   | Some defining_expr -> phantom_defining_expr ppf defining_expr
 
+let location d =
+  if not !Clflags.locations then ""
+  else Debuginfo.to_string d
+
 let operation d = function
-  | Capply _ty -> "app" ^ Debuginfo.to_string d
-  | Cextcall(lbl, _ty, _alloc, _) ->
-      Printf.sprintf "extcall \"%s\"%s" lbl (Debuginfo.to_string d)
+  | Capply _ty -> "app" ^ location d
+  | Cextcall(lbl, _ty_res, _ty_args, _alloc) ->
+      Printf.sprintf "extcall \"%s\"%s" lbl (location d)
   | Cload (c, Asttypes.Immutable) -> Printf.sprintf "load %s" (chunk c)
   | Cload (c, Asttypes.Mutable) -> Printf.sprintf "load_mut %s" (chunk c)
-  | Calloc -> "alloc" ^ Debuginfo.to_string d
+  | Calloc -> "alloc" ^ location d
   | Cstore (c, init) ->
     let init =
       match init with
@@ -135,20 +154,15 @@ let operation d = function
   | Cfloatofint -> "floatofint"
   | Cintoffloat -> "intoffloat"
   | Ccmpf c -> Printf.sprintf "%sf" (float_comparison c)
-  | Craise k -> Lambda.raise_kind k ^ Debuginfo.to_string d
-  | Ccheckbound -> "checkbound" ^ Debuginfo.to_string d
+  | Craise k -> Lambda.raise_kind k ^ location d
+  | Ccheckbound -> "checkbound" ^ location d
 
 let rec expr ppf = function
   | Cconst_int (n, _dbg) -> fprintf ppf "%i" n
   | Cconst_natint (n, _dbg) ->
     fprintf ppf "%s" (Nativeint.to_string n)
-  | Cblockheader(n, d) ->
-    fprintf ppf "block-hdr(%s)%s"
-      (Nativeint.to_string n) (Debuginfo.to_string d)
   | Cconst_float (n, _dbg) -> fprintf ppf "%F" n
   | Cconst_symbol (s, _dbg) -> fprintf ppf "\"%s\"" s
-  | Cconst_pointer (n, _dbg) -> fprintf ppf "%ia" n
-  | Cconst_natpointer (n, _dbg) -> fprintf ppf "%sa" (Nativeint.to_string n)
   | Cvar id -> V.print ppf id
   | Clet(id, def, (Clet(_, _, _) as body)) ->
       let print_binding id ppf def =
@@ -166,6 +180,10 @@ let rec expr ppf = function
      fprintf ppf
       "@[<2>(let@ @[<2>%a@ %a@]@ %a)@]"
       VP.print id expr def sequence body
+  | Clet_mut(id, kind, def, body) ->
+    fprintf ppf
+      "@[<2>(let_mut@ @[<2>%a: %a@ %a@]@ %a)@]"
+      VP.print id machtype kind expr def sequence body
   | Cphantom_let(var, def, (Cphantom_let(_, _, _) as body)) ->
       let print_binding var ppf def =
         fprintf ppf "@[<2>%a@ %a@]" VP.print var
@@ -201,7 +219,8 @@ let rec expr ppf = function
       List.iter (fun e -> fprintf ppf "@ %a" expr e) el;
       begin match op with
       | Capply mty -> fprintf ppf "@ %a" machtype mty
-      | Cextcall(_, mty, _, _) -> fprintf ppf "@ %a" machtype mty
+      | Cextcall(_, ty_res, ty_args, _) ->
+          fprintf ppf "@ %a" extcall_signature (ty_res, ty_args)
       | _ -> ()
       end;
       fprintf ppf ")@]"
@@ -262,7 +281,7 @@ let fundecl ppf f =
        fprintf ppf "%a: %a" VP.print id machtype ty)
      cases in
   fprintf ppf "@[<1>(function%s %s@;<1 4>@[<1>(%a)@]@ @[%a@])@]@."
-         (Debuginfo.to_string f.fun_dbg) f.fun_name
+         (location f.fun_dbg) f.fun_name
          print_cases f.fun_args sequence f.fun_body
 
 let data_item ppf = function

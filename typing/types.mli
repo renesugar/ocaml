@@ -240,6 +240,23 @@ module TypeOps : sig
   val hash : t -> int
 end
 
+(* *)
+
+module Uid : sig
+  type t
+
+  val reinit : unit -> unit
+
+  val mk : current_unit:string -> t
+  val of_compilation_unit_id : Ident.t -> t
+  val of_predef_id : Ident.t -> t
+  val internal_not_actually_unique : t
+
+  val for_actual_declaration : t -> bool
+
+  include Identifiable.S with type t := t
+end
+
 (* Maps of methods and instance variables *)
 
 module Meths : Map.S with type key = string
@@ -252,7 +269,8 @@ type value_description =
     val_kind: value_kind;
     val_loc: Location.t;
     val_attributes: Parsetree.attributes;
-   }
+    val_uid: Uid.t;
+  }
 
 and value_kind =
     Val_reg                             (* Regular value *)
@@ -269,11 +287,18 @@ and value_kind =
 
 module Variance : sig
   type t
-  type f = May_pos | May_neg | May_weak | Inj | Pos | Neg | Inv
-  val null : t                          (* no occurrence *)
-  val full : t                          (* strictly invariant *)
-  val covariant : t                     (* strictly covariant *)
-  val may_inv : t                       (* maybe invariant *)
+  type f =
+      May_pos                (* allow positive occurrences *)
+    | May_neg                (* allow negative occurrences *)
+    | May_weak               (* allow occurrences under a negative position *)
+    | Inj                    (* type is injective in this parameter *)
+    | Pos                    (* there is a positive occurrence *)
+    | Neg                    (* there is a negative occurrence *)
+    | Inv                    (* both negative and positive occurrences *)
+  val null : t               (* no occurrence *)
+  val full : t               (* strictly invariant (all flags) *)
+  val covariant : t          (* strictly covariant (May_pos, Pos and Inj) *)
+  val unknown : t            (* allow everything, guarantee nothing *)
   val union  : t -> t -> t
   val inter  : t -> t -> t
   val subset : t -> t -> bool
@@ -283,6 +308,40 @@ module Variance : sig
   val conjugate : t -> t                (* exchange positive and negative *)
   val get_upper : t -> bool * bool                  (* may_pos, may_neg   *)
   val get_lower : t -> bool * bool * bool * bool    (* pos, neg, inv, inj *)
+  val unknown_signature : arity:int -> t list
+  (** The most pessimistic variance for a completely unknown type. *)
+end
+
+module Separability : sig
+  (** see {!Typedecl_separability} for an explanation of separability
+      and separability modes.*)
+
+  type t = Ind | Sep | Deepsep
+  val eq : t -> t -> bool
+  val print : Format.formatter -> t -> unit
+
+  val rank : t -> int
+  (** Modes are ordered from the least to the most demanding:
+      Ind < Sep < Deepsep.
+      'rank' maps them to integers in an order-respecting way:
+      m1 < m2  <=>  rank m1 < rank m2 *)
+
+  val compare : t -> t -> int
+  (** Compare two mode according to their mode ordering. *)
+
+  val max : t -> t -> t
+  (** [max_mode m1 m2] returns the most demanding mode. It is used to
+      express the conjunction of two parameter mode constraints. *)
+
+  type signature = t list
+  (** The 'separability signature' of a type assigns a mode for
+      each of its parameters. [('a, 'b) t] has mode [(m1, m2)] if
+      [(t1, t2) t] is separable whenever [t1, t2] have mode [m1, m2]. *)
+
+  val print_signature : Format.formatter -> signature -> unit
+
+  val default_signature : arity:int -> signature
+  (** The most pessimistic separability for a completely unknown type. *)
 end
 
 (* Type definitions *)
@@ -295,12 +354,14 @@ type type_declaration =
     type_manifest: type_expr option;
     type_variance: Variance.t list;
     (* covariant, contravariant, weakly contravariant, injective *)
+    type_separability: Separability.t list;
     type_is_newtype: bool;
     type_expansion_scope: int;
     type_loc: Location.t;
     type_attributes: Parsetree.attributes;
     type_immediate: Type_immediacy.t;
     type_unboxed: unboxed_status;
+    type_uid: Uid.t;
   }
 
 and type_kind =
@@ -323,6 +384,7 @@ and label_declaration =
     ld_type: type_expr;
     ld_loc: Location.t;
     ld_attributes: Parsetree.attributes;
+    ld_uid: Uid.t;
   }
 
 and constructor_declaration =
@@ -332,6 +394,7 @@ and constructor_declaration =
     cd_res: type_expr option;
     cd_loc: Location.t;
     cd_attributes: Parsetree.attributes;
+    cd_uid: Uid.t;
   }
 
 and constructor_arguments =
@@ -353,15 +416,16 @@ val unboxed_true_default_false : unboxed_status
 val unboxed_true_default_true : unboxed_status
 
 type extension_constructor =
-    {
-      ext_type_path: Path.t;
-      ext_type_params: type_expr list;
-      ext_args: constructor_arguments;
-      ext_ret_type: type_expr option;
-      ext_private: private_flag;
-      ext_loc: Location.t;
-      ext_attributes: Parsetree.attributes;
-    }
+  {
+    ext_type_path: Path.t;
+    ext_type_params: type_expr list;
+    ext_args: constructor_arguments;
+    ext_ret_type: type_expr option;
+    ext_private: private_flag;
+    ext_loc: Location.t;
+    ext_attributes: Parsetree.attributes;
+    ext_uid: Uid.t;
+  }
 
 and type_transparence =
     Type_public      (* unrestricted expansion *)
@@ -392,6 +456,7 @@ type class_declaration =
     cty_variance: Variance.t list;
     cty_loc: Location.t;
     cty_attributes: Parsetree.attributes;
+    cty_uid: Uid.t;
   }
 
 type class_type_declaration =
@@ -401,6 +466,7 @@ type class_type_declaration =
     clty_variance: Variance.t list;
     clty_loc: Location.t;
     clty_attributes: Parsetree.attributes;
+    clty_uid: Uid.t;
   }
 
 (* Type expressions for the module language *)
@@ -440,6 +506,7 @@ and module_declaration =
     md_type: module_type;
     md_attributes: Parsetree.attributes;
     md_loc: Location.t;
+    md_uid: Uid.t;
   }
 
 and modtype_declaration =
@@ -447,6 +514,7 @@ and modtype_declaration =
     mtd_type: module_type option;  (* None: abstract *)
     mtd_attributes: Parsetree.attributes;
     mtd_loc: Location.t;
+    mtd_uid: Uid.t;
   }
 
 and rec_status =
@@ -478,6 +546,7 @@ type constructor_description =
     cstr_loc: Location.t;
     cstr_attributes: Parsetree.attributes;
     cstr_inlined: type_declaration option;
+    cstr_uid: Uid.t;
    }
 
 and constructor_tag =
@@ -505,6 +574,7 @@ type label_description =
     lbl_private: private_flag;          (* Read-only field? *)
     lbl_loc: Location.t;
     lbl_attributes: Parsetree.attributes;
+    lbl_uid: Uid.t;
   }
 
 (** Extracts the list of "value" identifiers bound by a signature.

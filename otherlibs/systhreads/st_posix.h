@@ -31,12 +31,6 @@
 #include <unistd.h>
 #endif
 
-#ifdef __GNUC__
-#define INLINE inline
-#else
-#define INLINE
-#endif
-
 typedef int st_retcode;
 
 #define SIGPREEMPTION SIGVTALRM
@@ -71,7 +65,7 @@ static int st_thread_create(st_thread_id * res,
 
 /* Cleanup at thread exit */
 
-static INLINE void st_thread_cleanup(void)
+Caml_inline void st_thread_cleanup(void)
 {
   return;
 }
@@ -102,12 +96,12 @@ static int st_tls_newkey(st_tlskey * res)
   return pthread_key_create(res, NULL);
 }
 
-static INLINE void * st_tls_get(st_tlskey k)
+Caml_inline void * st_tls_get(st_tlskey k)
 {
   return pthread_getspecific(k);
 }
 
-static INLINE void st_tls_set(st_tlskey k, void * v)
+Caml_inline void st_tls_set(st_tlskey k, void * v)
 {
   pthread_setspecific(k, v);
 }
@@ -153,7 +147,7 @@ static void st_masterlock_release(st_masterlock * m)
 }
 
 CAMLno_tsan  /* This can be called for reading [waiters] without locking. */
-static INLINE int st_masterlock_waiters(st_masterlock * m)
+Caml_inline int st_masterlock_waiters(st_masterlock * m)
 {
   return m->waiters;
 }
@@ -167,7 +161,7 @@ static INLINE int st_masterlock_waiters(st_masterlock * m)
    off the lock to a waiter we know exists, it's safe, as they'll certainly
    re-wake us later.
 */
-static INLINE void st_thread_yield(st_masterlock * m)
+Caml_inline void st_thread_yield(st_masterlock * m)
 {
   pthread_mutex_lock(&m->lock);
   /* We must hold the lock to call this. */
@@ -203,12 +197,26 @@ typedef pthread_mutex_t * st_mutex;
 static int st_mutex_create(st_mutex * res)
 {
   int rc;
-  st_mutex m = caml_stat_alloc_noexc(sizeof(pthread_mutex_t));
-  if (m == NULL) return ENOMEM;
-  rc = pthread_mutex_init(m, NULL);
-  if (rc != 0) { caml_stat_free(m); return rc; }
+  pthread_mutexattr_t attr;
+  st_mutex m;
+
+  rc = pthread_mutexattr_init(&attr);
+  if (rc != 0) goto error1;
+  rc = pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
+  if (rc != 0) goto error2;
+  m = caml_stat_alloc_noexc(sizeof(pthread_mutex_t));
+  if (m == NULL) { rc = ENOMEM; goto error2; }
+  rc = pthread_mutex_init(m, &attr);
+  if (rc != 0) goto error3;
+  pthread_mutexattr_destroy(&attr);
   *res = m;
   return 0;
+error3:
+  caml_stat_free(m);
+error2:
+  pthread_mutexattr_destroy(&attr);
+error1:
+  return rc;
 }
 
 static int st_mutex_destroy(st_mutex m)
@@ -219,20 +227,24 @@ static int st_mutex_destroy(st_mutex m)
   return rc;
 }
 
-static INLINE int st_mutex_lock(st_mutex m)
+#define MUTEX_DEADLOCK EDEADLK
+
+Caml_inline int st_mutex_lock(st_mutex m)
 {
   return pthread_mutex_lock(m);
 }
 
-#define PREVIOUSLY_UNLOCKED 0
-#define ALREADY_LOCKED EBUSY
+#define MUTEX_PREVIOUSLY_UNLOCKED 0
+#define MUTEX_ALREADY_LOCKED EBUSY
 
-static INLINE int st_mutex_trylock(st_mutex m)
+Caml_inline int st_mutex_trylock(st_mutex m)
 {
   return pthread_mutex_trylock(m);
 }
 
-static INLINE int st_mutex_unlock(st_mutex m)
+#define MUTEX_NOT_OWNED EPERM
+
+Caml_inline int st_mutex_unlock(st_mutex m)
 {
   return pthread_mutex_unlock(m);
 }
@@ -260,17 +272,17 @@ static int st_condvar_destroy(st_condvar c)
   return rc;
 }
 
-static INLINE int st_condvar_signal(st_condvar c)
+Caml_inline int st_condvar_signal(st_condvar c)
 {
   return pthread_cond_signal(c);
 }
 
-static INLINE int st_condvar_broadcast(st_condvar c)
+Caml_inline int st_condvar_broadcast(st_condvar c)
 {
   return pthread_cond_broadcast(c);
 }
 
-static INLINE int st_condvar_wait(st_condvar c, st_mutex m)
+Caml_inline int st_condvar_wait(st_condvar c, st_mutex m)
 {
   return pthread_cond_wait(c, m);
 }
@@ -443,6 +455,8 @@ value caml_thread_sigmask(value cmd, value sigs) /* ML */
   retcode = pthread_sigmask(how, &set, &oldset);
   caml_leave_blocking_section();
   st_check_error(retcode, "Thread.sigmask");
+  /* Run any handlers for just-unmasked pending signals */
+  caml_process_pending_actions();
   return st_encode_sigset(&oldset);
 }
 

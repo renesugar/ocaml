@@ -37,7 +37,7 @@ let f (x : [< `A | `B]) = match x with `A | `B | `C -> 0;; (* warn *)
 Line 1, characters 49-51:
 1 | let f (x : [< `A | `B]) = match x with `A | `B | `C -> 0;; (* warn *)
                                                      ^^
-Warning 12: this sub-pattern is unused.
+Warning 12 [redundant-subpat]: this sub-pattern is unused.
 val f : [< `A | `B ] -> int = <fun>
 |}];;
 let f (x : [`A | `B]) = match x with `A | `B | `C -> 0;; (* fail *)
@@ -73,31 +73,31 @@ type t = A | B
 Line 9, characters 0-41:
 9 | function (`A|`B), _ -> 0 | _,(`A|`B) -> 1;;
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 8: this pattern-matching is not exhaustive.
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
 Here is an example of a case that is not matched:
 (`AnyOtherTag, `AnyOtherTag)
 - : [> `A | `B ] * [> `A | `B ] -> int = <fun>
 Line 10, characters 0-29:
 10 | function `B,1 -> 1 | _,1 -> 2;;
      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 8: this pattern-matching is not exhaustive.
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
 Here is an example of a case that is not matched:
 (_, 0)
 Line 10, characters 21-24:
 10 | function `B,1 -> 1 | _,1 -> 2;;
                           ^^^
-Warning 11: this match case is unused.
+Warning 11 [redundant-case]: this match case is unused.
 - : [< `B ] * int -> int = <fun>
 Line 11, characters 0-29:
 11 | function 1,`B -> 1 | 1,_ -> 2;;
      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 8: this pattern-matching is not exhaustive.
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
 Here is an example of a case that is not matched:
 (0, _)
 Line 11, characters 21-24:
 11 | function 1,`B -> 1 | 1,_ -> 2;;
                           ^^^
-Warning 11: this match case is unused.
+Warning 11 [redundant-case]: this match case is unused.
 - : int * [< `B ] -> int = <fun>
 |}];;
 
@@ -138,7 +138,7 @@ type t = private [> `A of string ]
 Line 2, characters 0-24:
 2 | function (`A x : t) -> x;;
     ^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 8: this pattern-matching is not exhaustive.
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
 Here is an example of a case that is not matched:
 `<some private tag>
 - : t -> string = <fun>
@@ -149,7 +149,7 @@ let f = function `AnyOtherTag, _ -> 1 | _, (`AnyOtherTag|`AnyOtherTag') -> 2;;
 Line 1, characters 8-76:
 1 | let f = function `AnyOtherTag, _ -> 1 | _, (`AnyOtherTag|`AnyOtherTag') -> 2;;
             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 8: this pattern-matching is not exhaustive.
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
 Here is an example of a case that is not matched:
 (`AnyOtherTag', `AnyOtherTag'')
 val f : [> `AnyOtherTag ] * [> `AnyOtherTag | `AnyOtherTag' ] -> int = <fun>
@@ -175,4 +175,25 @@ Line 2, characters 30-31:
 Error: This expression has type t but an expression was expected of type
          [ `A ]
        The first variant type is private, it may not allow the tag(s) `A
+|}]
+
+
+(** Check that the non-regularity error message is robust to permutation *)
+
+type ('a,'b,'c,'d,'e) a = [ `A of ('d,'a,'e,'c,'b) b ]
+and  ('a,'b,'c,'d,'e) b = [ `B of ('c,'d,'e,'a,'b) c ]
+and  ('a,'b,'c,'d,'e) c = [ `C of ('a,'b,'c,'d,'e) a ]
+[%%expect {|
+Line 3, characters 0-54:
+3 | type ('a,'b,'c,'d,'e) a = [ `A of ('d,'a,'e,'c,'b) b ]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error: This recursive type is not regular.
+       The type constructor a is defined as
+         type ('a, 'b, 'c, 'd, 'e) a
+       but it is used as
+         ('e, 'c, 'b, 'd, 'a) a
+       after the following expansion(s):
+         ('d, 'a, 'e, 'c, 'b) b = [ `B of ('e, 'c, 'b, 'd, 'a) c ],
+         ('e, 'c, 'b, 'd, 'a) c = [ `C of ('e, 'c, 'b, 'd, 'a) a ]
+       All uses need to match the definition for the recursive type to be regular.
 |}]

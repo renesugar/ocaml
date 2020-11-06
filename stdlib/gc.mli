@@ -72,6 +72,10 @@ type stat =
 
     stack_size: int;
     (** Current size of the stack, in words. @since 3.12.0 *)
+
+    forced_major_collections: int;
+    (** Number of forced full major collections completed since the program
+        was started. @since 4.12.0 *)
 }
 (** The memory management counters are returned in a [stat] record.
 
@@ -111,7 +115,7 @@ type control =
     (** This value controls the GC messages on standard error output.
        It is a sum of some of the following flags, to print messages
        on the corresponding events:
-       - [0x001] Start of major GC cycle.
+       - [0x001] Start and end of major GC cycle.
        - [0x002] Minor collection and major GC slice.
        - [0x004] Growing and shrinking of the heap.
        - [0x008] Resizing of stacks and memory manager tables.
@@ -145,17 +149,47 @@ type control =
     mutable allocation_policy : int;
     [@ocaml.deprecated_mutable
          "Use {(Gc.get()) with Gc.allocation_policy = ...}"]
-    (** The policy used for allocating in the heap.  Possible
-        values are 0 to 2.  0 is the original next-fit policy,
-        usually fast, but can result in fragmentation.  1 is the
-        first-fit policy, which can be slower in some cases but
-        can be better for programs with fragmentation problems.
-        2 is the best-fit allocation policy, the best for avoiding
-        fragmentation.
-        Note that changing the allocation policy at run-time forces
+    (** The policy used for allocating in the major heap.
+        Possible values are 0, 1 and 2.
+
+        - 0 is the next-fit policy, which is usually fast but can
+          result in fragmentation, increasing memory consumption.
+
+        - 1 is the first-fit policy, which avoids fragmentation but
+          has corner cases (in certain realistic workloads) where it
+          is sensibly slower.
+
+        - 2 is the best-fit policy, which is fast and avoids
+          fragmentation. In our experiments it is faster and uses less
+          memory than both next-fit and first-fit.
+          (since OCaml 4.10)
+
+        The current default is next-fit, as the best-fit policy is new
+        and not yet widely tested. We expect best-fit to become the
+        default in the future.
+
+        On one example that was known to be bad for next-fit and first-fit,
+        next-fit takes 28s using 855Mio of memory,
+        first-fit takes 47s using 566Mio of memory,
+        best-fit takes 27s using 545Mio of memory.
+
+        Note: When changing to a low-fragmentation policy, you may
+        need to augment the [space_overhead] setting, for example
+        using [100] instead of the default [80] which is tuned for
+        next-fit. Indeed, the difference in fragmentation behavior
+        means that different policies will have different proportion
+        of "wasted space" for a given program. Less fragmentation
+        means a smaller heap so, for the same amount of wasted space,
+        a higher proportion of wasted space. This makes the GC work
+        harder, unless you relax it by increasing [space_overhead].
+
+        Note: changing the allocation policy at run-time forces
         a heap compaction, which is a lengthy operation unless the
         heap is small (e.g. at the start of the program).
-        Default: 0. @since 3.11.0 *)
+
+        Default: 0.
+
+        @since 3.11.0 *)
 
     window_size : int;
     (** The size of the window used by the major GC for smoothing
@@ -274,7 +308,7 @@ external get_minor_free : unit -> int = "caml_get_minor_free"
 external get_bucket : int -> int = "caml_get_major_bucket" [@@noalloc]
 (** [get_bucket n] returns the current size of the [n]-th future bucket
     of the GC smoothing system. The unit is one millionth of a full GC.
-    Raise [Invalid_argument] if [n] is negative, return 0 if n is larger
+    @raise Invalid_argument if [n] is negative, return 0 if n is larger
     than the smoothing window.
 
     @since 4.03.0 *)
@@ -390,84 +424,123 @@ val create_alarm : (unit -> unit) -> alarm
 
 val delete_alarm : alarm -> unit
 (** [delete_alarm a] will stop the calls to the function associated
-   to [a].  Calling [delete_alarm a] again has no effect. *)
+   to [a]. Calling [delete_alarm a] again has no effect. *)
+
+external eventlog_pause : unit -> unit = "caml_eventlog_pause"
+(** [eventlog_pause ()] will pause the collection of traces in the
+   runtime.
+   Traces are collected if the program is linked to the instrumented runtime
+   and started with the environment variable OCAML_EVENTLOG_ENABLED.
+   Events are flushed to disk after pausing, and no new events will be
+   recorded until [eventlog_resume] is called. *)
+
+external eventlog_resume : unit -> unit = "caml_eventlog_resume"
+(** [eventlog_resume ()] will resume the collection of traces in the
+   runtime.
+   Traces are collected if the program is linked to the instrumented runtime
+   and started with the environment variable OCAML_EVENTLOG_ENABLED.
+   This call can be used after calling [eventlog_pause], or if the program
+   was started with OCAML_EVENTLOG_ENABLED=p. (which pauses the collection of
+   traces before the first event.) *)
+
 
 (** [Memprof] is a sampling engine for allocated memory words. Every
    allocated word has a probability of being sampled equal to a
-   configurable sampling rate. Since blocks are composed of several
-   words, a block can potentially be sampled several times. When a
-   block is sampled (i.e., it contains at least one sample word), a
-   user-defined callback is called.
+   configurable sampling rate. Once a block is sampled, it becomes
+   tracked. A tracked block triggers a user-defined callback as soon
+   as it is allocated, promoted or deallocated.
+
+   Since blocks are composed of several words, a block can potentially
+   be sampled several times. If a block is sampled several times, then
+   each of the callback is called once for each event of this block:
+   the multiplicity is given in the [n_samples] field of the
+   [allocation] structure.
 
    This engine makes it possible to implement a low-overhead memory
-   profiler as an OCaml library. *)
+   profiler as an OCaml library.
+
+   Note: this API is EXPERIMENTAL. It may change without prior
+   notice. *)
 module Memprof :
   sig
-    type alloc_kind =
-      | Minor
-      | Major
-      | Unmarshalled
-    (** Allocation kinds
-        - [Minor] : the allocation took place in the minor heap.
-        - [Major] : the allocation took place in the major heap.
-        - [Unmarshalled] : the allocation happened while unmarshalling. *)
+    type allocation = private
+      { n_samples : int;
+        (** The number of samples in this block (>= 1). *)
 
-    type sample_info = {
-        n_samples: int;
-        (** The number of samples in this block. Always >= 1, it is
-           sampled according to a binomial distribution whose
-           parameters are the size of the block (including the header)
-           and the sampling rate. Hence, it is in average equal to the
-           size of the block multiplied by the sampling rate. *)
-        kind: alloc_kind;
-        (** The kind of the allocation. *)
-        tag: int;
-        (** The tag of the allocated block. *)
-        size: int;
-        (** The size of the allocated block, in words (excluding the
-            header). *)
-        callstack: Printexc.raw_backtrace;
+        size : int;
+        (** The size of the block, in words, excluding the header. *)
+
+        unmarshalled : bool;
+        (** Whether the block comes from unmarshalling. *)
+
+        callstack : Printexc.raw_backtrace
         (** The callstack for the allocation. *)
+      }
+    (** The type of metadata associated with allocations. This is the
+       type of records passed to the callback triggered by the
+       sampling of an allocation. *)
+
+    type ('minor, 'major) tracker = {
+      alloc_minor: allocation -> 'minor option;
+      alloc_major: allocation -> 'major option;
+      promote: 'minor -> 'major option;
+      dealloc_minor: 'minor -> unit;
+      dealloc_major: 'major -> unit;
     }
-    (** The meta data passed at each callback.  *)
+    (**
+       A [('minor, 'major) tracker] describes how memprof should track
+       sampled blocks over their lifetime, keeping a user-defined piece
+       of metadata for each of them: ['minor] is the type of metadata
+       to keep for minor blocks, and ['major] the type of metadata
+       for major blocks.
 
-    type 'a callback = sample_info -> (Obj.t, 'a) Ephemeron.K1.t option
-    (** [callback] is the type of callbacks launched by the sampling
-       engine. A callback returns an option over an ephemeron whose
-       key is set to the allocated block for further tracking. After
-       the callback returns, the key of the ephemeron should not be
-       read, since this would change its reachability properties.
+       When using threads, it is guaranteed that allocation callbacks are
+       always run in the thread where the allocation takes place.
 
-       The sampling is temporarily disabled when calling the callback
-       for the current thread. So it does not need to be reentrant if
-       the program is single-threaded. However, if threads are used, it is
-       possible that a context switch occurs during a callback, in
-       which case reentrancy has to be taken into account.
+       If an allocation-tracking or promotion-tracking function returns [None],
+       memprof stops tracking the corresponding value.
+     *)
+
+    val null_tracker: ('minor, 'major) tracker
+    (** Default callbacks simply return [None] or [()] *)
+
+    val start :
+      sampling_rate:float ->
+      ?callstack_size:int ->
+      ('minor, 'major) tracker ->
+      unit
+    (** Start the sampling with the given parameters. Fails if
+       sampling is already active.
+
+       The parameter [sampling_rate] is the sampling rate in samples
+       per word (including headers). Usually, with cheap callbacks, a
+       rate of 1e-4 has no visible effect on performance, and 1e-3
+       causes the program to run a few percent slower
+
+       The parameter [callstack_size] is the length of the callstack
+       recorded at every sample. Its default is [max_int].
+
+       The parameter [tracker] determines how to track sampled blocks
+       over their lifetime in the minor and major heap.
+
+       Sampling is temporarily disabled when calling a callback
+       for the current thread. So they do not need to be reentrant if
+       the program is single-threaded. However, if threads are used,
+       it is possible that a context switch occurs during a callback,
+       in this case the callback functions must be reentrant.
 
        Note that the callback can be postponed slightly after the
-       actual allocation. Therefore, the context of the callback may
-       be slightly different than expected.
-
-       In addition, note that calling [start] or [stop] in a callback
-       can lead to losses of samples. *)
-
-    type 'a ctrl = {
-        sampling_rate : float;
-        (** The sampling rate in samples per word (including headers).
-           Usually, with cheap callbacks, a rate of 0.001 has no
-           visible effect on performance, and 0.01 causes the program
-           to run a few percent slower. *)
-        callstack_size : int;
-        (** The length of the callstack recorded at every sample. *)
-        callback : 'a callback
-        (** The callback to be called at every sample. *)
-    }
-    (** Control data for the sampling engine.  *)
-
-    val start : 'a ctrl -> unit
-    (** Start the sampling with the given parameters. If another
-        sampling is already running, it is stopped. *)
+       actual event. The callstack passed to the callback is always
+       accurate, but the program state may have evolved. *)
 
     val stop : unit -> unit
-    (** Stop the sampling. *)
+    (** Stop the sampling. Fails if sampling is not active.
+
+        This function does not allocate memory.
+
+        All the already tracked blocks are discarded. If there are
+        pending postponed callbacks, they may be discarded.
+
+        Calling [stop] when a callback is running can lead to
+        callbacks not being called even though some events happened. *)
 end

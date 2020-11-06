@@ -207,15 +207,15 @@ let load_lambda ppf lam =
   Symtable.update_global_table();
   let initial_bindings = !toplevel_value_bindings in
   let bytecode, closure = Meta.reify_bytecode code [| events |] None in
-  try
+  match
     may_trace := true;
-    let retval = closure () in
-    may_trace := false;
-    if can_free then Meta.release_bytecode bytecode;
-    Result retval
-  with x ->
-    may_trace := false;
-    if can_free then Meta.release_bytecode bytecode;
+    Fun.protect
+      ~finally:(fun () -> may_trace := false;
+                          if can_free then Meta.release_bytecode bytecode)
+      closure
+  with
+  | retval -> Result retval
+  | exception x ->
     record_backtrace ();
     toplevel_value_bindings := initial_bindings; (* PR#6211 *)
     Symtable.restore_state initial_symtable;
@@ -275,7 +275,7 @@ let execute_phrase print_outcome ppf phr =
       let (str, sg, sn, newenv) = Typemod.type_toplevel_phrase oldenv sstr in
       if !Clflags.dump_typedtree then Printtyped.implementation ppf str;
       let sg' = Typemod.Signature_names.simplify newenv sn sg in
-      ignore (Includemod.signatures oldenv sg sg');
+      ignore (Includemod.signatures ~mark:Mark_positive oldenv sg sg');
       Typecore.force_delayed_checks ();
       let lam = Translmod.transl_toplevel_definition str in
       Warnings.check_fatal ();
@@ -394,46 +394,67 @@ let preprocess_phrase ppf phr =
   if !Clflags.dump_source then Pprintast.top_phrase ppf phr;
   phr
 
-let use_file ppf wrap_mod name =
-  try
-    let (filename, ic, must_close) =
-      if name = "" then
-        ("(stdin)", stdin, false)
-      else begin
-        let filename = Load_path.find name in
-        let ic = open_in_bin filename in
-        (filename, ic, true)
-      end
-    in
-    let lb = Lexing.from_channel ic in
-    Warnings.reset_fatal ();
-    Location.init lb filename;
-    (* Skip initial #! line if any *)
-    Lexer.skip_hash_bang lb;
-    let success =
-      protect_refs [ R (Location.input_name, filename);
-                     R (Location.input_lexbuf, Some lb); ]
-        (fun () ->
-        try
-          List.iter
-            (fun ph ->
-              let ph = preprocess_phrase ppf ph in
-              if not (execute_phrase !use_print_results ppf ph) then raise Exit)
-            (if wrap_mod then
-               parse_mod_use_file name lb
-             else
-               !parse_use_file lb);
-          true
-        with
-        | Exit -> false
-        | Sys.Break -> fprintf ppf "Interrupted.@."; false
-        | x -> Location.report_exception ppf x; false) in
-    if must_close then close_in ic;
-    success
-  with Not_found -> fprintf ppf "Cannot find file %s.@." name; false
+let use_channel ppf ~wrap_in_module ic name filename =
+  let lb = Lexing.from_channel ic in
+  Warnings.reset_fatal ();
+  Location.init lb filename;
+  (* Skip initial #! line if any *)
+  Lexer.skip_hash_bang lb;
+  protect_refs [ R (Location.input_name, filename);
+                 R (Location.input_lexbuf, Some lb); ]
+    (fun () ->
+    try
+      List.iter
+        (fun ph ->
+          let ph = preprocess_phrase ppf ph in
+          if not (execute_phrase !use_print_results ppf ph) then raise Exit)
+        (if wrap_in_module then
+           parse_mod_use_file name lb
+         else
+           !parse_use_file lb);
+      true
+    with
+    | Exit -> false
+    | Sys.Break -> fprintf ppf "Interrupted.@."; false
+    | x -> Location.report_exception ppf x; false)
 
-let mod_use_file ppf name = use_file ppf true name
-let use_file ppf name = use_file ppf false name
+let use_output ppf command =
+  let fn = Filename.temp_file "ocaml" "_toploop.ml" in
+  Misc.try_finally ~always:(fun () ->
+      try Sys.remove fn with Sys_error _ -> ())
+    (fun () ->
+       match
+         Printf.ksprintf Sys.command "%s > %s"
+           command
+           (Filename.quote fn)
+       with
+       | 0 ->
+         let ic = open_in_bin fn in
+         Misc.try_finally ~always:(fun () -> close_in ic)
+           (fun () ->
+              use_channel ppf ~wrap_in_module:false ic "" "(command-output)")
+       | n ->
+         fprintf ppf "Command exited with code %d.@." n;
+         false)
+
+let use_file ppf ~wrap_in_module name =
+  match name with
+  | "" ->
+    use_channel ppf ~wrap_in_module stdin name "(stdin)"
+  | _ ->
+    match Load_path.find name with
+    | filename ->
+      let ic = open_in_bin filename in
+      Misc.try_finally ~always:(fun () -> close_in ic)
+        (fun () -> use_channel ppf ~wrap_in_module ic name filename)
+    | exception Not_found ->
+      fprintf ppf "Cannot find file %s.@." name;
+      false
+
+let mod_use_file ppf name =
+  use_file ppf ~wrap_in_module:true name
+let use_file ppf name =
+  use_file ppf ~wrap_in_module:false name
 
 let use_silently ppf name =
   protect_refs [ R (use_print_results, false) ] (fun () -> use_file ppf name)
@@ -569,7 +590,7 @@ let loop ppf =
   begin
     try initialize_toplevel_env ()
     with Env.Error _ | Typetexp.Error _ as exn ->
-      Location.report_exception ppf exn; exit 2
+      Location.report_exception ppf exn; raise (Compenv.Exit_with_status 2)
   end;
   let lb = Lexing.from_function refill_lexbuf in
   Location.init lb "//toplevel//";
@@ -593,7 +614,7 @@ let loop ppf =
       Env.reset_cache_toplevel ();
       ignore(execute_phrase true ppf phr)
     with
-    | End_of_file -> exit 0
+    | End_of_file -> raise (Compenv.Exit_with_status 0)
     | Sys.Break -> fprintf ppf "Interrupted.@."; Btype.backtrack snap
     | PPerror -> ()
     | x -> Location.report_exception ppf x; Btype.backtrack snap
@@ -615,7 +636,7 @@ let run_script ppf name args =
   begin
     try toplevel_env := Compmisc.initial_env()
     with Env.Error _ | Typetexp.Error _ as exn ->
-      Location.report_exception ppf exn; exit 2
+      Location.report_exception ppf exn; raise (Compenv.Exit_with_status 2)
   end;
   Sys.interactive := false;
   run_hooks After_setup;

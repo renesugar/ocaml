@@ -15,23 +15,17 @@
 
 ROOTDIR = ..
 
-include $(ROOTDIR)/Makefile.config
 include $(ROOTDIR)/Makefile.common
 
 TARGET_BINDIR ?= $(BINDIR)
 
-COMPILER=$(ROOTDIR)/ocamlc
+COMPILER=$(ROOTDIR)/ocamlc$(EXE)
 CAMLC=$(CAMLRUN) $(COMPILER)
 COMPFLAGS=-strict-sequence -absname -w +a-4-9-41-42-44-45-48 \
-          -g -warn-error A -bin-annot -nostdlib \
+          -g -warn-error A -bin-annot -nostdlib -principal \
           -safe-string -strict-formats
 ifeq "$(FLAMBDA)" "true"
-OPTCOMPFLAGS=-O3
-else
-OPTCOMPFLAGS=
-endif
-ifeq "$(FUNCTION_SECTIONS)" "true"
-OPTCOMPFLAGS += -function-sections
+OPTCOMPFLAGS += -O3
 endif
 OPTCOMPILER=$(ROOTDIR)/ocamlopt
 CAMLOPT=$(CAMLRUN) $(OPTCOMPILER)
@@ -40,13 +34,11 @@ DEPFLAGS=-slash
 
 OC_CPPFLAGS += -I$(ROOTDIR)/runtime
 
-# Object file prefix
-P=stdlib__
-
 include StdlibModules
 
 OBJS=$(addsuffix .cmo,$(STDLIB_MODULES))
-OTHERS=$(filter-out camlinternalFormatBasics.cmo stdlib.cmo,$(OBJS))
+NOSTDLIB= camlinternalFormatBasics.cmo camlinternalAtomic.cmo stdlib.cmo
+OTHERS=$(filter-out $(NOSTDLIB),$(OBJS))
 
 PREFIXED_OBJS=$(filter stdlib__%.cmo,$(OBJS))
 UNPREFIXED_OBJS=$(PREFIXED_OBJS:stdlib__%.cmo=%)
@@ -66,17 +58,8 @@ endif
 allopt: stdlib.cmxa std_exit.cmx
 opt.opt: allopt
 
-LEGACY_OBJS=$(patsubst stdlib__%,"$(INSTALL_LIBDIR)/%", \
-                                  $(filter stdlib__%,$(OBJS)))
 .PHONY: install
 install::
-# Transitional: when upgrading from 4.06 -> 4.07, module M is in stdlib__m.cm*,
-# while previously it was in m.cm*, which confuses the compiler.
-	rm -f $(LEGACY_OBJS)
-# Remove "old" pervasives.* and bigarray.* to avoid getting confused with the
-# Stdlib versions.
-	rm -f "$(INSTALL_LIBDIR)/pervasives.*" "$(INSTALL_LIBDIR)/bigarray.*"
-# End transitional
 	$(INSTALL_DATA) \
 	  stdlib.cma std_exit.cmo *.cmi camlheader_ur \
 	  "$(INSTALL_LIBDIR)"
@@ -168,7 +151,8 @@ $(HEADERPROGRAM)%$(O): \
   OC_CPPFLAGS += -DRUNTIME_NAME='"$(HEADER_PATH)ocamlrun$(subst .,,$*)"'
 
 $(HEADERPROGRAM)%$(O): $(HEADERPROGRAM).c
-	$(CC) -c $(OC_CFLAGS) $(OC_CPPFLAGS) $(OUTPUTOBJ)$@ $^
+	$(CC) -c $(OC_CFLAGS) $(CFLAGS) $(OC_CPPFLAGS) $(CPPFLAGS) \
+	  $(OUTPUTOBJ)$@ $^
 
 camlheader_ur: camlheader
 	cp camlheader $@
@@ -179,7 +163,7 @@ tmptargetcamlheader%exe: $(TARGETHEADERPROGRAM)%$(O)
 	strip $@
 
 $(TARGETHEADERPROGRAM)%$(O): $(HEADERPROGRAM).c
-	$(CC) -c $(OC_CFLAGS) $(OC_CPPFLAGS) \
+	$(CC) -c $(OC_CFLAGS) $(CFLAGS) $(OC_CPPFLAGS) $(CPPFLAGS) \
 	      -DRUNTIME_NAME='"$(HEADER_TARGET_PATH)ocamlrun$(subst .,,$*)"' \
 	      $(OUTPUTOBJ)$@ $^
 
@@ -246,8 +230,7 @@ $(OBJS:.cmo=.cmx) std_exit.cmx: stdlib.cmi
 $(OTHERS:.cmo=.cmx) std_exit.cmx: stdlib.cmx
 
 clean::
-	rm -f *.cm* *.$(O) *.$(A) *.odoc
-	rm -f camlheader*
+	rm -f *.cm* *.o *.obj *.a *.lib *.odoc
 
 include .depend
 
@@ -258,7 +241,7 @@ SPACE := $(EMPTY) $(EMPTY)
 depend:
 	$(CAMLDEP) $(DEPFLAGS) $(filter-out stdlib.%,$(wildcard *.mli *.ml)) \
 	  > .depend.tmp
-	$(CAMLDEP) $(DEPFLAGS) -pp "$(AWK) -f remove_module_aliases.awk" \
+	$(CAMLDEP) $(DEPFLAGS) -pp "$(AWK) -f ./remove_module_aliases.awk" \
 	  stdlib.ml stdlib.mli >> .depend.tmp
 	sed -Ee \
 	  's#(^| )(${subst ${SPACE},|,${UNPREFIXED_OBJS}})[.]#\1stdlib__\2.#g' \

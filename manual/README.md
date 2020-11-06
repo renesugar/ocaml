@@ -85,8 +85,8 @@ chapters (or sometimes sections) are mapped to a distinct `.etex` file:
     - The ocamlbuild compilation manager: `ocamlbuild.etex`
     - Interfacing C with OCaml: `intf-c.etex`
     - Optimisation with Flambda: `flambda.etex`
-    - Memory profiling with Spacetime: `spacetime-chapter.etex`
     - Fuzzing with afl-fuzz: `afl-fuzz.etex`
+    - Runtime tracing with the instrumented runtime: `instrumented-runtime.etex`
 
 Note that ocamlc,ocamlopt and the toplevel options overlap a lot.
 Consequently, these options are described together in the file
@@ -112,6 +112,24 @@ of `unified-options.etex` contains the relevant information.
 
 Latex extensions
 ----------------
+
+### Sections (and subsections, and subsubsections)
+
+In order to provide stable links to all part of the manual, the standard
+`\section`, `\subsection` and `\subsubsection` macros are replaced by
+variants that take the section label as their first argument.
+For instance, in the manual, you have to write
+```latex
+\section{s:basics}{Basics}
+```
+rather than
+```latex
+\section{Basics\label{s:basics}}
+```
+This restriction ensures that hevea picks the section label when generating the
+header ids.
+
+A similar macro, `\lparagraph`, is provided for paragraphs.
 
 ### Caml environments
 

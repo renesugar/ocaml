@@ -213,7 +213,7 @@ and nondep_sig_item env va ids = function
       with Ctype.Nondep_cannot_erase _ as exn ->
         match va with
           Co -> Sig_modtype(id, {mtd_type=None; mtd_loc=Location.none;
-                                 mtd_attributes=[]}, vis)
+                                 mtd_attributes=[]; mtd_uid = d.mtd_uid}, vis)
         | _  -> raise exn
       end
   | Sig_class(id, d, rs, vis) ->
@@ -222,6 +222,8 @@ and nondep_sig_item env va ids = function
       Sig_class_type(id, Ctype.nondep_cltype_declaration env ids d, rs, vis)
 
 and nondep_sig env va ids sg =
+  let scope = Ctype.create_scope () in
+  let sg, env = Env.enter_signature ~scope sg env in
   List.map (nondep_sig_item env va ids) sg
 
 and nondep_modtype_decl env ids mtd =
@@ -240,11 +242,11 @@ let enrich_typedecl env p id decl =
           decl
         else
           let orig_ty =
-            Ctype.reify_univars
+            Ctype.reify_univars env
               (Btype.newgenty(Tconstr(p, orig_decl.type_params, ref Mnil)))
           in
           let new_ty =
-            Ctype.reify_univars
+            Ctype.reify_univars env
               (Btype.newgenty(Tconstr(Pident id, decl.type_params, ref Mnil)))
           in
           let env = Env.add_type ~check:false id decl env in

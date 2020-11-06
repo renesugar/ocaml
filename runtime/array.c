@@ -23,8 +23,7 @@
 #include "caml/misc.h"
 #include "caml/mlvalues.h"
 #include "caml/signals.h"
-/* Why is caml/spacetime.h included conditionnally sometimes and not here ? */
-#include "caml/spacetime.h"
+#include "caml/eventlog.h"
 
 static const mlsize_t mlsize_t_max = -1;
 
@@ -284,7 +283,6 @@ CAMLprim value caml_floatarray_create(value len)
 }
 
 /* [len] is a [value] representing number of words or floats */
-/* Spacetime profiling assumes that this function is only called from OCaml. */
 CAMLprim value caml_make_vect(value len, value init)
 {
   CAMLparam2 (len, init);
@@ -310,9 +308,7 @@ CAMLprim value caml_make_vect(value len, value init)
 #endif
   } else {
     if (size <= Max_young_wosize) {
-      uintnat profinfo;
-      Get_my_profinfo_with_cached_backtrace(profinfo, size);
-      res = caml_alloc_small_with_my_or_given_profinfo(size, 0, profinfo);
+      res = caml_alloc_small(size, 0);
       for (i = 0; i < size; i++) Field(res, i) = init;
     }
     else if (size > Max_wosize) caml_invalid_argument("Array.make");
@@ -320,7 +316,7 @@ CAMLprim value caml_make_vect(value len, value init)
       if (Is_block(init) && Is_young(init)) {
         /* We don't want to create so many major-to-minor references,
            so [init] is moved to the major heap by doing a minor GC. */
-        CAML_INSTR_INT ("force_minor/make_vect@", 1);
+        CAML_EV_COUNTER (EV_C_FORCE_MINOR_MAKE_VECT, 1);
         caml_minor_collection ();
       }
       CAMLassert(!(Is_block(init) && Is_young(init)));

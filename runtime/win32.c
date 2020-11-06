@@ -38,7 +38,7 @@
 #include <string.h>
 #include <signal.h>
 #include "caml/alloc.h"
-#include "caml/address_class.h"
+#include "caml/codefrag.h"
 #include "caml/fail.h"
 #include "caml/io.h"
 #include "caml/memory.h"
@@ -87,7 +87,7 @@ int caml_read_fd(int fd, int flags, void * buf, int n)
 {
   int retcode;
   if ((flags & CHANNEL_FLAG_FROM_SOCKET) == 0) {
-    caml_enter_blocking_section();
+    caml_enter_blocking_section_no_pending();
     retcode = read(fd, buf, n);
     /* Large reads from console can fail with ENOMEM.  Reduce requested size
        and try again. */
@@ -97,7 +97,7 @@ int caml_read_fd(int fd, int flags, void * buf, int n)
     caml_leave_blocking_section();
     if (retcode == -1) caml_sys_io_error(NO_ARG);
   } else {
-    caml_enter_blocking_section();
+    caml_enter_blocking_section_no_pending();
     retcode = recv((SOCKET) _get_osfhandle(fd), buf, n, 0);
     caml_leave_blocking_section();
     if (retcode == -1) caml_win32_sys_error(WSAGetLastError());
@@ -109,20 +109,12 @@ int caml_write_fd(int fd, int flags, void * buf, int n)
 {
   int retcode;
   if ((flags & CHANNEL_FLAG_FROM_SOCKET) == 0) {
-#if defined(NATIVE_CODE) && defined(WITH_SPACETIME)
-  if (flags & CHANNEL_FLAG_BLOCKING_WRITE) {
-    retcode = write(fd, buf, n);
-  } else {
-#endif
-    caml_enter_blocking_section();
+    caml_enter_blocking_section_no_pending();
     retcode = write(fd, buf, n);
     caml_leave_blocking_section();
-#if defined(NATIVE_CODE) && defined(WITH_SPACETIME)
-  }
-#endif
     if (retcode == -1) caml_sys_io_error(NO_ARG);
   } else {
-    caml_enter_blocking_section();
+    caml_enter_blocking_section_no_pending();
     retcode = send((SOCKET) _get_osfhandle(fd), buf, n, 0);
     caml_leave_blocking_section();
     if (retcode == -1) caml_win32_sys_error(WSAGetLastError());
@@ -410,7 +402,8 @@ CAMLexport void caml_expand_command_line(int * argcp, wchar_t *** argvp)
    the directory named [dirname].  No entries are added for [.] and [..].
    Return 0 on success, -1 on error; set errno in the case of error. */
 
-int caml_read_directory(wchar_t * dirname, struct ext_table * contents)
+CAMLexport int caml_read_directory(wchar_t * dirname,
+                                   struct ext_table * contents)
 {
   size_t dirnamelen;
   wchar_t * template;
@@ -539,7 +532,8 @@ static LONG CALLBACK
   DWORD *ctx_ip = &(ctx->Eip);
   DWORD *ctx_sp = &(ctx->Esp);
 
-  if (code == EXCEPTION_STACK_OVERFLOW && Is_in_code_area (*ctx_ip))
+  if (code == EXCEPTION_STACK_OVERFLOW &&
+      caml_find_code_fragment_by_pc((char *) (*ctx_ip)) != NULL)
     {
       uintnat faulting_address;
       uintnat * alt_esp;
@@ -561,24 +555,14 @@ static LONG CALLBACK
 
 #else
 
-/* Do not use the macro from address_class.h here. */
-#undef Is_in_code_area
-#define Is_in_code_area(pc) \
- ( ((char *)(pc) >= caml_code_area_start && \
-    (char *)(pc) <= caml_code_area_end)     \
-|| ((char *)(pc) >= &caml_system__code_begin && \
-    (char *)(pc) <= &caml_system__code_end)     \
-|| (Classify_addr(pc) & In_code_area) )
-extern char caml_system__code_begin, caml_system__code_end;
-
-
 static LONG CALLBACK
     caml_stack_overflow_VEH (EXCEPTION_POINTERS* exn_info)
 {
   DWORD code   = exn_info->ExceptionRecord->ExceptionCode;
   CONTEXT *ctx = exn_info->ContextRecord;
 
-  if (code == EXCEPTION_STACK_OVERFLOW && Is_in_code_area (ctx->Rip))
+  if (code == EXCEPTION_STACK_OVERFLOW &&
+      caml_find_code_fragment_by_pc((char *) (ctx->Rip)) != NULL)
     {
       uintnat faulting_address;
       uintnat * alt_rsp;
@@ -683,32 +667,40 @@ wchar_t * caml_executable_name(void)
 
 /* snprintf emulation */
 
-#if defined(_WIN32) && !defined(_UCRT)
-int caml_snprintf(char * buf, size_t size, const char * format, ...)
-{
-  int len;
-  va_list args;
-
-  if (size > 0) {
-    va_start(args, format);
-    len = _vsnprintf(buf, size, format, args);
-    va_end(args);
-    if (len >= 0 && len < size) {
-      /* [len] characters were stored in [buf],
-         a null-terminator was appended. */
-      return len;
-    }
-    /* [size] characters were stored in [buf], without null termination.
-       Put a null terminator, truncating the output. */
-    buf[size - 1] = 0;
-  }
-  /* Compute the actual length of output, excluding null terminator */
-  va_start(args, format);
-  len = _vscprintf(format, args);
-  va_end(args);
-  return len;
+#define CAML_SNPRINTF(_vsnprintf, _vscprintf) \
+{ \
+  int len; \
+  va_list args; \
+\
+  if (size > 0) { \
+    va_start(args, format); \
+    len = _vsnprintf(buf, size, format, args); \
+    va_end(args); \
+    if (len >= 0 && len < size) { \
+      /* [len] characters were stored in [buf], \
+         a null-terminator was appended. */ \
+      return len; \
+    } \
+    /* [size] characters were stored in [buf], without null termination. \
+       Put a null terminator, truncating the output. */ \
+    buf[size - 1] = 0; \
+  } \
+  /* Compute the actual length of output, excluding null terminator */ \
+  va_start(args, format); \
+  len = _vscprintf(format, args); \
+  va_end(args); \
+  return len; \
 }
+
+#ifndef _UCRT
+int caml_snprintf(char * buf, size_t size, const char * format, ...)
+CAML_SNPRINTF(_vsnprintf, _vscprintf)
 #endif
+
+int caml_snwprintf(wchar_t * buf, size_t size, const wchar_t * format, ...)
+CAML_SNPRINTF(_vsnwprintf, _vscwprintf)
+
+#undef CAML_SNPRINTF
 
 wchar_t *caml_secure_getenv (wchar_t const *var)
 {
@@ -883,12 +875,12 @@ CAMLexport value caml_copy_string_of_utf16(const wchar_t *s)
   /* Do not include final NULL */
   retcode = win_wide_char_to_multi_byte(s, slen, NULL, 0);
   v = caml_alloc_string(retcode);
-  win_wide_char_to_multi_byte(s, slen, String_val(v), retcode);
+  win_wide_char_to_multi_byte(s, slen, (char *)String_val(v), retcode);
 
   return v;
 }
 
-CAMLexport inline wchar_t* caml_stat_strdup_to_utf16(const char *s)
+CAMLexport wchar_t* caml_stat_strdup_to_utf16(const char *s)
 {
   wchar_t * ws;
   int retcode;

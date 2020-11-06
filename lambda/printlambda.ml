@@ -23,13 +23,12 @@ open Lambda
 let rec struct_const ppf = function
   | Const_base(Const_int n) -> fprintf ppf "%i" n
   | Const_base(Const_char c) -> fprintf ppf "%C" c
-  | Const_base(Const_string (s, _)) -> fprintf ppf "%S" s
+  | Const_base(Const_string (s, _, _)) -> fprintf ppf "%S" s
   | Const_immstring s -> fprintf ppf "#%S" s
   | Const_base(Const_float f) -> fprintf ppf "%s" f
   | Const_base(Const_int32 n) -> fprintf ppf "%lil" n
   | Const_base(Const_int64 n) -> fprintf ppf "%LiL" n
   | Const_base(Const_nativeint n) -> fprintf ppf "%nin" n
-  | Const_pointer n -> fprintf ppf "%ia" n
   | Const_block(tag, []) ->
       fprintf ppf "[%i]" tag
   | Const_block(tag, sc1::scl) ->
@@ -218,6 +217,9 @@ let primitive ppf = function
   | Plsrint -> fprintf ppf "lsr"
   | Pasrint -> fprintf ppf "asr"
   | Pintcomp(cmp) -> integer_comparison ppf cmp
+  | Pcompare_ints -> fprintf ppf "compare_ints"
+  | Pcompare_floats -> fprintf ppf "compare_floats"
+  | Pcompare_bints bi -> fprintf ppf "compare_bints %s" (boxed_integer_name bi)
   | Poffsetint n -> fprintf ppf "%i+" n
   | Poffsetref n -> fprintf ppf "+:=%i"n
   | Pintoffloat -> fprintf ppf "int_of_float"
@@ -377,6 +379,9 @@ let name_of_primitive = function
   | Plsrint -> "Plsrint"
   | Pasrint -> "Pasrint"
   | Pintcomp _ -> "Pintcomp"
+  | Pcompare_ints -> "Pcompare_ints"
+  | Pcompare_floats -> "Pcompare_floats"
+  | Pcompare_bints _ -> "Pcompare"
   | Poffsetint _ -> "Poffsetint"
   | Poffsetref _ -> "Poffsetref"
   | Pintoffloat -> "Pintoffloat"
@@ -453,6 +458,7 @@ let function_attribute ppf { inline; specialise; local; is_a_functor; stub } =
   begin match inline with
   | Default_inline -> ()
   | Always_inline -> fprintf ppf "always_inline@ "
+  | Hint_inline -> fprintf ppf "hint_inline@ "
   | Never_inline -> fprintf ppf "never_inline@ "
   | Unroll i -> fprintf ppf "unroll(%i)@ " i
   end;
@@ -467,14 +473,18 @@ let function_attribute ppf { inline; specialise; local; is_a_functor; stub } =
   | Never_local -> fprintf ppf "never_local@ "
   end
 
-let apply_tailcall_attribute ppf tailcall =
-  if tailcall then
-    fprintf ppf " @@tailcall"
+let apply_tailcall_attribute ppf = function
+  | Default_tailcall -> ()
+  | Tailcall_expectation true ->
+    fprintf ppf " tailcall"
+  | Tailcall_expectation false ->
+    fprintf ppf " tailcall(false)"
 
 let apply_inlined_attribute ppf = function
   | Default_inline -> ()
   | Always_inline -> fprintf ppf " always_inline"
   | Never_inline -> fprintf ppf " never_inline"
+  | Hint_inline -> fprintf ppf " hint_inline"
   | Unroll i -> fprintf ppf " never_inline(%i)" i
 
 let apply_specialised_attribute ppf = function
@@ -491,7 +501,7 @@ let rec lam ppf = function
       let lams ppf largs =
         List.iter (fun l -> fprintf ppf "@ %a" lam l) largs in
       fprintf ppf "@[<2>(apply@ %a%a%a%a%a)@]" lam ap.ap_func lams ap.ap_args
-        apply_tailcall_attribute ap.ap_should_be_tailcall
+        apply_tailcall_attribute ap.ap_tailcall
         apply_inlined_attribute ap.ap_inlined
         apply_specialised_attribute ap.ap_specialised
   | Lfunction{kind; params; return; body; attr} ->
@@ -625,13 +635,24 @@ let rec lam ppf = function
        | Lev_module_definition ident ->
          Format.asprintf "module-defn(%a)" Ident.print ident
       in
-      fprintf ppf "@[<2>(%s %s(%i)%s:%i-%i@ %a)@]" kind
-              ev.lev_loc.Location.loc_start.Lexing.pos_fname
-              ev.lev_loc.Location.loc_start.Lexing.pos_lnum
-              (if ev.lev_loc.Location.loc_ghost then "<ghost>" else "")
-              ev.lev_loc.Location.loc_start.Lexing.pos_cnum
-              ev.lev_loc.Location.loc_end.Lexing.pos_cnum
-              lam expr
+      (* -dno-locations also hides the placement of debug events;
+         this is good for the readability of the resulting output (usually
+         the end-user goal when using -dno-locations), as it strongly
+         reduces the nesting level of subterms. *)
+      if not !Clflags.locations then lam ppf expr
+      else begin match ev.lev_loc with
+      | Loc_unknown ->
+        fprintf ppf "@[<2>(%s <unknown location>@ %a)@]" kind lam expr
+      | Loc_known {scopes; loc} ->
+        fprintf ppf "@[<2>(%s %s %s(%i)%s:%i-%i@ %a)@]" kind
+                (Debuginfo.Scoped_location.string_of_scopes scopes)
+                loc.Location.loc_start.Lexing.pos_fname
+                loc.Location.loc_start.Lexing.pos_lnum
+                (if loc.Location.loc_ghost then "<ghost>" else "")
+                loc.Location.loc_start.Lexing.pos_cnum
+                loc.Location.loc_end.Lexing.pos_cnum
+                lam expr
+      end
   | Lifused(id, expr) ->
       fprintf ppf "@[<2>(ifused@ %a@ %a)@]" Ident.print id lam expr
 

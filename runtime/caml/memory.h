@@ -18,7 +18,7 @@
 #ifndef CAML_MEMORY_H
 #define CAML_MEMORY_H
 
-#ifndef CAML_INTERNALS
+#ifndef CAML_NAME_SPACE
 #include "compatibility.h"
 #endif
 #include "config.h"
@@ -57,11 +57,12 @@ CAMLextern void caml_free_dependent_memory (mlsize_t bsz);
 CAMLextern void caml_modify (value *, value);
 CAMLextern void caml_initialize (value *, value);
 CAMLextern value caml_check_urgent_gc (value);
+CAMLextern color_t caml_allocation_color (void *hp);
+#ifdef CAML_INTERNALS
 CAMLextern char *caml_alloc_for_heap (asize_t request);   /* Size in bytes. */
 CAMLextern void caml_free_for_heap (char *mem);
-CAMLextern void caml_disown_for_heap (char *mem);
 CAMLextern int caml_add_to_heap (char *mem);
-CAMLextern color_t caml_allocation_color (void *hp);
+#endif /* CAML_INTERNALS */
 
 CAMLextern int caml_huge_fallback_count;
 
@@ -214,7 +215,8 @@ enum caml_alloc_small_flags {
   CAML_FROM_C = 0,     CAML_FROM_CAML = 2
 };
 
-extern void caml_alloc_small_dispatch (tag_t tag, intnat wosize, int flags);
+extern void caml_alloc_small_dispatch (intnat wosize, int flags,
+                                       int nallocs, unsigned char* alloc_lens);
 // Do not call asynchronous callbacks from allocation functions
 #define Alloc_small_origin CAML_FROM_C
 #define Alloc_small_aux(result, wosize, tag, profinfo, track) do {     \
@@ -224,12 +226,12 @@ extern void caml_alloc_small_dispatch (tag_t tag, intnat wosize, int flags);
   Caml_state_field(young_ptr) -= Whsize_wosize (wosize);               \
   if (Caml_state_field(young_ptr) < Caml_state_field(young_limit)) {   \
     Setup_for_gc;                                                      \
-    caml_alloc_small_dispatch((tag), (wosize),                         \
-                              (track) | Alloc_small_origin);           \
+    caml_alloc_small_dispatch((wosize), (track) | Alloc_small_origin,  \
+                              1, NULL);                                \
     Restore_after_gc;                                                  \
   }                                                                    \
   Hd_hp (Caml_state_field(young_ptr)) =                                \
-    Make_header_with_profinfo ((wosize), (tag), Caml_black, profinfo); \
+    Make_header_with_profinfo ((wosize), (tag), 0, profinfo);          \
   (result) = Val_hp (Caml_state_field(young_ptr));                     \
   DEBUG_clear ((result), (wosize));                                    \
 }while(0)
@@ -237,25 +239,10 @@ extern void caml_alloc_small_dispatch (tag_t tag, intnat wosize, int flags);
 #define Alloc_small_with_profinfo(result, wosize, tag, profinfo) \
   Alloc_small_aux(result, wosize, tag, profinfo, CAML_DO_TRACK)
 
-#if defined(NATIVE_CODE) && defined(WITH_SPACETIME)
-
-extern uintnat caml_spacetime_my_profinfo(struct ext_table**, uintnat);
-
-#define Alloc_small(result, wosize, tag) \
-  Alloc_small_with_profinfo(result, wosize, tag, \
-    caml_spacetime_my_profinfo(NULL, wosize))
-#define Alloc_small_no_track(result, wosize, tag) \
-  Alloc_small_aux(result, wosize, tag, \
-    caml_spacetime_my_profinfo(NULL, wosize), CAML_DONT_TRACK)
-
-#else
-
 #define Alloc_small(result, wosize, tag) \
   Alloc_small_with_profinfo(result, wosize, tag, (uintnat) 0)
 #define Alloc_small_no_track(result, wosize, tag) \
   Alloc_small_aux(result, wosize, tag, (uintnat) 0, CAML_DONT_TRACK)
-
-#endif
 
 /* Deprecated alias for [caml_modify] */
 
@@ -269,6 +256,9 @@ struct caml__roots_block {
   intnat nitems;
   value *tables [5];
 };
+
+/* Global variable moved to Caml_state in 4.10 */
+#define caml_local_roots (Caml_state_field(local_roots))
 
 /* The following macros are used to declare C local variables and
    function parameters of type [value].

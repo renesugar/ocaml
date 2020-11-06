@@ -98,12 +98,14 @@ let of_prim name =
     then
       PrimMap.enter c_prim_table name
     else begin
-      let symb =
-        try Dll.find_primitive name
-        with Not_found -> raise(Error(Unavailable_primitive name)) in
-      let num = PrimMap.enter c_prim_table name in
-      Dll.synchronize_primitive num symb;
-      num
+      match Dll.find_primitive name with
+      | None -> raise(Error(Unavailable_primitive name))
+      | Some Prim_exists ->
+          PrimMap.enter c_prim_table name
+      | Some (Prim_loaded symb) ->
+          let num = PrimMap.enter c_prim_table name in
+          Dll.synchronize_primitive num symb;
+          num
     end
 
 let require_primitive name =
@@ -154,10 +156,11 @@ let init () =
         try List.assoc name Predef.builtin_values
         with Not_found -> fatal_error "Symtable.init" in
       let c = slot_for_setglobal id in
-      let cst = Const_block(Obj.object_tag,
-                            [Const_base(Const_string (name, None));
-                             Const_base(Const_int (-i-1))
-                            ])
+      let cst = Const_block
+          (Obj.object_tag,
+           [Const_base(Const_string (name, Location.none,None));
+            Const_base(Const_int (-i-1))
+           ])
       in
       literal_table := (c, cst) :: !literal_table)
     Runtimedef.builtin_exceptions;
@@ -216,12 +219,11 @@ let patch_object buff patchlist =
 let rec transl_const = function
     Const_base(Const_int i) -> Obj.repr i
   | Const_base(Const_char c) -> Obj.repr c
-  | Const_base(Const_string (s, _)) -> Obj.repr s
+  | Const_base(Const_string (s, _, _)) -> Obj.repr s
   | Const_base(Const_float f) -> Obj.repr (float_of_string f)
   | Const_base(Const_int32 i) -> Obj.repr i
   | Const_base(Const_int64 i) -> Obj.repr i
   | Const_base(Const_nativeint i) -> Obj.repr i
-  | Const_pointer i -> Obj.repr i
   | Const_immstring s -> Obj.repr s
   | Const_block(tag, fields) ->
       let block = Obj.new_block tag (List.length fields) in

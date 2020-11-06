@@ -45,7 +45,8 @@ val with_default_loc: loc -> (unit -> 'a) -> 'a
 
 module Const : sig
   val char : char -> constant
-  val string : ?quotation_delimiter:string -> string -> constant
+  val string :
+    ?quotation_delimiter:string -> ?loc:Location.t -> string -> constant
   val integer : ?suffix:char -> string -> constant
   val int : ?suffix:char -> int -> constant
   val int32 : ?suffix:char -> int32 -> constant
@@ -203,7 +204,7 @@ module Val:
 module Type:
   sig
     val mk: ?loc:loc -> ?attrs:attrs -> ?docs:docs -> ?text:text ->
-      ?params:(core_type * variance) list ->
+      ?params:(core_type * (variance * injectivity)) list ->
       ?cstrs:(core_type * core_type * loc) list ->
       ?kind:type_kind -> ?priv:private_flag -> ?manifest:core_type -> str ->
       type_declaration
@@ -219,8 +220,8 @@ module Type:
 module Te:
   sig
     val mk: ?loc:loc -> ?attrs:attrs -> ?docs:docs ->
-      ?params:(core_type * variance) list -> ?priv:private_flag ->
-      lid -> extension_constructor list -> type_extension
+      ?params:(core_type * (variance * injectivity)) list ->
+      ?priv:private_flag -> lid -> extension_constructor list -> type_extension
 
     val mk_exception: ?loc:loc -> ?attrs:attrs -> ?docs:docs ->
       extension_constructor -> type_exception
@@ -453,7 +454,8 @@ module Cf:
 module Ci:
   sig
     val mk: ?loc:loc -> ?attrs:attrs -> ?docs:docs -> ?text:text ->
-      ?virt:virtual_flag -> ?params:(core_type * variance) list ->
+      ?virt:virtual_flag ->
+      ?params:(core_type * (variance * injectivity)) list ->
       str -> 'a -> 'a class_infos
   end
 

@@ -18,6 +18,7 @@
 
 open Asttypes
 open Lambda
+open Debuginfo.Scoped_location
 
 (* To transform let-bound references into variables *)
 
@@ -218,23 +219,28 @@ let simplify_exits lam =
       | Prevapply, [x; Lapply ap]
       | Prevapply, [x; Levent (Lapply ap,_)] ->
         Lapply {ap with ap_args = ap.ap_args @ [x]; ap_loc = loc}
-      | Prevapply, [x; f] -> Lapply {ap_should_be_tailcall=false;
-                                     ap_loc=loc;
-                                     ap_func=f;
-                                     ap_args=[x];
-                                     ap_inlined=Default_inline;
-                                     ap_specialised=Default_specialise}
-
+      | Prevapply, [x; f] ->
+          Lapply {
+            ap_loc=loc;
+            ap_func=f;
+            ap_args=[x];
+            ap_tailcall=Default_tailcall;
+            ap_inlined=Default_inline;
+            ap_specialised=Default_specialise;
+          }
         (* Simplify %apply, for n-ary functions with n > 1 *)
       | Pdirapply, [Lapply ap; x]
       | Pdirapply, [Levent (Lapply ap,_); x] ->
         Lapply {ap with ap_args = ap.ap_args @ [x]; ap_loc = loc}
-      | Pdirapply, [f; x] -> Lapply {ap_should_be_tailcall=false;
-                                     ap_loc=loc;
-                                     ap_func=f;
-                                     ap_args=[x];
-                                     ap_inlined=Default_inline;
-                                     ap_specialised=Default_specialise}
+      | Pdirapply, [f; x] ->
+          Lapply {
+            ap_loc=loc;
+            ap_func=f;
+            ap_args=[x];
+            ap_tailcall=Default_tailcall;
+            ap_inlined=Default_inline;
+            ap_specialised=Default_specialise;
+          }
         (* Simplify %identity *)
       | Pidentity, [e] -> e
 
@@ -514,7 +520,8 @@ let simplify_lets lam =
   | Lfunction{kind; params; return=return1; body = l; attr; loc} ->
       begin match simplif l with
         Lfunction{kind=Curried; params=params'; return=return2; body; attr; loc}
-        when kind = Curried && optimize ->
+        when kind = Curried && optimize &&
+             List.length params + List.length params' <= Lambda.max_arity() ->
           (* The return type is the type of the value returned after
              applying all the parameters to the function. The return
              type of the merged function taking [params @ params'] as
@@ -596,28 +603,30 @@ let simplify_lets lam =
 
 (* Tail call info in annotation files *)
 
-let is_tail_native_heuristic : (int -> bool) ref =
-  ref (fun _ -> true)
-
 let rec emit_tail_infos is_tail lambda =
-  let call_kind args =
-    if is_tail
-    && ((not !Clflags.native_code)
-        || (!is_tail_native_heuristic (List.length args)))
-   then Annot.Tail
-   else Annot.Stack in
   match lambda with
   | Lvar _ -> ()
   | Lconst _ -> ()
   | Lapply ap ->
-      if ap.ap_should_be_tailcall
-      && not is_tail
-      && Warnings.is_active Warnings.Expect_tailcall
-        then Location.prerr_warning ap.ap_loc Warnings.Expect_tailcall;
+      begin
+        (* Note: is_tail does not take backend-specific logic into
+           account (maximum number of parameters, etc.)  so it may
+           over-approximate tail-callness.
+
+           Trying to do something more fine-grained would result in
+           different warnings depending on whether the native or
+           bytecode compiler is used. *)
+        let maybe_warn ~is_tail ~expect_tail =
+          if is_tail <> expect_tail then
+            Location.prerr_warning (to_location ap.ap_loc)
+              (Warnings.Wrong_tailcall_expectation expect_tail) in
+        match ap.ap_tailcall with
+        | Default_tailcall -> ()
+        | Tailcall_expectation expect_tail ->
+            maybe_warn ~is_tail ~expect_tail
+      end;
       emit_tail_infos false ap.ap_func;
-      list_emit_tail_infos false ap.ap_args;
-      if !Clflags.annotations then
-        Stypes.record (Stypes.An_call (ap.ap_loc, call_kind ap.ap_args))
+      list_emit_tail_infos false ap.ap_args
   | Lfunction {body = lam} ->
       emit_tail_infos true lam
   | Llet (_str, _k, _, lam, body) ->
@@ -671,12 +680,10 @@ let rec emit_tail_infos is_tail lambda =
       emit_tail_infos false body
   | Lassign (_, lam) ->
       emit_tail_infos false lam
-  | Lsend (_, meth, obj, args, loc) ->
+  | Lsend (_, meth, obj, args, _loc) ->
       emit_tail_infos false meth;
       emit_tail_infos false obj;
-      list_emit_tail_infos false args;
-      if !Clflags.annotations then
-        Stypes.record (Stypes.An_call (loc, call_kind (obj :: args)));
+      list_emit_tail_infos false args
   | Levent (lam, _) ->
       emit_tail_infos is_tail lam
   | Lifused (_, lam) ->
@@ -716,8 +723,8 @@ let split_default_wrapper ~id:fun_id ~kind ~params ~return ~body ~attr ~loc =
           Lapply {
             ap_func = Lvar inner_id;
             ap_args = args;
-            ap_loc = Location.none;
-            ap_should_be_tailcall = false;
+            ap_loc = Loc_unknown;
+            ap_tailcall = Default_tailcall;
             ap_inlined = Default_inline;
             ap_specialised = Default_specialise;
           }
@@ -774,7 +781,7 @@ let simplify_local_functions lam =
   let current_scope = ref lam in
   let check_static lf =
     if lf.attr.local = Always_local then
-      Location.prerr_warning lf.loc
+      Location.prerr_warning (to_location lf.loc)
         (Warnings.Inlining_impossible
            "This function cannot be compiled into a static continuation")
   in
@@ -782,7 +789,8 @@ let simplify_local_functions lam =
     | {local = Always_local; _}
     | {local = Default_local; inline = (Never_inline | Default_inline); _}
       -> true
-    | {local = Default_local; inline = (Always_inline | Unroll _); _}
+    | {local = Default_local;
+       inline = (Always_inline | Unroll _ | Hint_inline); _}
     | {local = Never_local; _}
       -> false
   in
@@ -881,6 +889,7 @@ let simplify_lambda lam =
     |> simplify_exits
     |> simplify_lets
   in
-  if !Clflags.annotations || Warnings.is_active Warnings.Expect_tailcall
-    then emit_tail_infos true lam;
+  if !Clflags.annotations
+     || Warnings.is_active (Warnings.Wrong_tailcall_expectation true)
+  then emit_tail_infos true lam;
   lam

@@ -15,7 +15,6 @@
 
 ROOTDIR = ..
 
-include $(ROOTDIR)/Makefile.config
 include $(ROOTDIR)/Makefile.common
 
 # Lists of source files
@@ -23,28 +22,23 @@ include $(ROOTDIR)/Makefile.common
 BYTECODE_C_SOURCES := $(addsuffix .c, \
   interp misc stacks fix_code startup_aux startup_byt freelist major_gc \
   minor_gc memory alloc roots_byt globroots fail_byt signals \
-  signals_byt printexc backtrace_byt backtrace compare ints \
+  signals_byt printexc backtrace_byt backtrace compare ints eventlog \
   floats str array io extern intern hash sys meta parsing gc_ctrl md5 obj \
   lexing callback debugger weak compact finalise custom dynlink \
-  spacetime_byt afl $(UNIX_OR_WIN32) bigarray main memprof domain)
+  afl $(UNIX_OR_WIN32) bigarray main memprof domain \
+  skiplist codefrag)
 
 NATIVE_C_SOURCES := $(addsuffix .c, \
   startup_aux startup_nat main fail_nat roots_nat signals \
   signals_nat misc freelist major_gc minor_gc memory alloc compare ints \
-  floats str array io extern intern hash sys parsing gc_ctrl md5 obj \
+  floats str array io extern intern hash sys parsing gc_ctrl eventlog md5 obj \
   lexing $(UNIX_OR_WIN32) printexc callback weak compact finalise custom \
   globroots backtrace_nat backtrace dynlink_nat debugger meta \
-  dynlink clambda_checks spacetime_nat spacetime_snapshot afl bigarray \
-  memprof domain)
+  dynlink clambda_checks afl bigarray \
+  memprof domain skiplist codefrag)
 
-# The other_files variable stores the list of files whose dependencies
-# should be computed by `make depend` although they do not need to be
-# compiled on the current build system
-ifeq "$(UNIX_OR_WIN32)" "win32"
-other_files := unix.c
-else
-other_files := win32.c
-endif
+GENERATED_HEADERS := caml/opnames.h caml/version.h caml/jumptbl.h
+CONFIG_HEADERS := caml/m.h caml/s.h
 
 ifeq "$(TOOLCHAIN)" "msvc"
 ASM_EXT := asm
@@ -87,22 +81,22 @@ endif
 
 ASM_OBJECTS := $(ASM_SOURCES:.$(ASM_EXT)=.$(O))
 
-libcamlrun_OBJECTS := $(BYTECODE_C_SOURCES:.c=_b.$(O))
+libcamlrun_OBJECTS := $(BYTECODE_C_SOURCES:.c=.b.$(O))
 
-libcamlrund_OBJECTS := $(BYTECODE_C_SOURCES:.c=_bd.$(O)) \
-  instrtrace_bd.$(O)
+libcamlrund_OBJECTS := $(BYTECODE_C_SOURCES:.c=.bd.$(O)) \
+  instrtrace.bd.$(O)
 
-libcamlruni_OBJECTS := $(BYTECODE_C_SOURCES:.c=_bi.$(O))
+libcamlruni_OBJECTS := $(BYTECODE_C_SOURCES:.c=.bi.$(O))
 
-libcamlrunpic_OBJECTS := $(BYTECODE_C_SOURCES:.c=_bpic.$(O))
+libcamlrunpic_OBJECTS := $(BYTECODE_C_SOURCES:.c=.bpic.$(O))
 
-libasmrun_OBJECTS := $(NATIVE_C_SOURCES:.c=_n.$(O)) $(ASM_OBJECTS)
+libasmrun_OBJECTS := $(NATIVE_C_SOURCES:.c=.n.$(O)) $(ASM_OBJECTS)
 
-libasmrund_OBJECTS := $(NATIVE_C_SOURCES:.c=_nd.$(O)) $(ASM_OBJECTS)
+libasmrund_OBJECTS := $(NATIVE_C_SOURCES:.c=.nd.$(O)) $(ASM_OBJECTS)
 
-libasmruni_OBJECTS := $(NATIVE_C_SOURCES:.c=_ni.$(O)) $(ASM_OBJECTS)
+libasmruni_OBJECTS := $(NATIVE_C_SOURCES:.c=.ni.$(O)) $(ASM_OBJECTS)
 
-libasmrunpic_OBJECTS := $(NATIVE_C_SOURCES:.c=_npic.$(O)) \
+libasmrunpic_OBJECTS := $(NATIVE_C_SOURCES:.c=.npic.$(O)) \
   $(ASM_OBJECTS:.$(O)=_libasmrunpic.$(O))
 
 # General (non target-specific) assembler and compiler flags
@@ -136,22 +130,21 @@ ifneq "$(CCOMPTYPE)" "msvc"
 OC_CFLAGS += -g
 endif
 
+OC_CPPFLAGS += -DCAMLDLLIMPORT=
+
 OC_NATIVE_CPPFLAGS = -DNATIVE_CODE -DTARGET_$(ARCH)
 
 ifeq "$(UNIX_OR_WIN32)" "unix"
 OC_NATIVE_CPPFLAGS += -DMODEL_$(MODEL)
 endif
 
-OC_NATIVE_CPPFLAGS += -DSYS_$(SYSTEM) $(IFLEXDIR) $(LIBUNWIND_INCLUDE_FLAGS)
+OC_NATIVE_CPPFLAGS += -DSYS_$(SYSTEM) $(IFLEXDIR)
 
 OC_DEBUG_CPPFLAGS=-DDEBUG
 OC_INSTR_CPPFLAGS=-DCAML_INSTR
 
 ifeq "$(TOOLCHAIN)" "msvc"
 ASMFLAGS=
-ifeq ($(WITH_SPACETIME),true)
-ASMFLAGS=/DWITH_SPACETIME
-endif
 endif
 
 ASPPFLAGS = -DSYS_$(SYSTEM) -I$(ROOTDIR)/runtime
@@ -179,7 +172,12 @@ endif
 all: $(BYTECODE_STATIC_LIBRARIES) $(BYTECODE_SHARED_LIBRARIES) $(PROGRAMS)
 
 .PHONY: allopt
+ifneq "$(NATIVE_COMPILER)" "false"
 allopt: $(NATIVE_STATIC_LIBRARIES) $(NATIVE_SHARED_LIBRARIES)
+else
+allopt:
+	$(error The build has been configured with --disable-native-compiler)
+endif
 
 INSTALL_INCDIR=$(INSTALL_LIBDIR)/caml
 .PHONY: install
@@ -201,9 +199,12 @@ endif
 
 .PHONY: clean
 clean:
-	rm -f $(PROGRAMS) *.$(O) *.$(A) *.$(SO) ld.conf
-	rm -f primitives prims.c caml/opnames.h caml/jumptbl.h
-	rm -f caml/version.h domain_state*.inc
+	rm -f *.o *.obj *.a *.lib *.so *.dll ld.conf
+	rm -f ocamlrun ocamlrund ocamlruni
+	rm -f ocamlrun.exe ocamlrund.exe ocamlruni.exe
+	rm -f primitives primitives.new prims.c $(GENERATED_HEADERS)
+	rm -f domain_state*.inc
+	rm -rf $(DEPDIR)
 
 .PHONY: distclean
 distclean: clean
@@ -252,7 +253,7 @@ prims.c : primitives
 	 echo '	 0 };') > prims.c
 
 caml/opnames.h : caml/instruct.h
-	cat $^ | tr -d '\r' | \
+	tr -d '\r' < $< | \
 	sed -e '/\/\*/d' \
 	    -e '/^#/d' \
 	    -e 's/enum /static char * names_of_/' \
@@ -261,7 +262,7 @@ caml/opnames.h : caml/instruct.h
 
 # caml/jumptbl.h is required only if you have GCC 2.0 or later
 caml/jumptbl.h : caml/instruct.h
-	cat $^ | tr -d '\r' | \
+	tr -d '\r' < $< | \
 	sed -n -e '/^  /s/ \([A-Z]\)/ \&\&lbl_\1/gp' \
 	       -e '/^}/q' > $@
 
@@ -311,20 +312,26 @@ libasmrun_shared.$(SO): $(libasmrunpic_OBJECTS)
 
 # Target-specific preprocessor and compiler flags
 
-%_bd.$(O): OC_CPPFLAGS += $(OC_DEBUG_CPPFLAGS)
+%.bd.$(O): OC_CPPFLAGS += $(OC_DEBUG_CPPFLAGS)
+%.bd.$(D): OC_CPPFLAGS += $(OC_DEBUG_CPPFLAGS)
 
-%_bi.$(O): OC_CPPFLAGS += $(OC_INSTR_CPPFLAGS)
+%.bi.$(O): OC_CPPFLAGS += $(OC_INSTR_CPPFLAGS)
+%.bi.$(D): OC_CPPFLAGS += $(OC_INSTR_CPPFLAGS)
 
-%_bpic.$(O): OC_CFLAGS += $(SHAREDLIB_CFLAGS)
+%.bpic.$(O): OC_CFLAGS += $(SHAREDLIB_CFLAGS)
 
-%_n.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS)
+%.n.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS)
+%.n.$(D): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS)
 
-%_nd.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS) $(OC_DEBUG_CPPFLAGS)
+%.nd.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS) $(OC_DEBUG_CPPFLAGS)
+%.nd.$(D): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS) $(OC_DEBUG_CPPFLAGS)
 
-%_ni.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS) $(OC_INSTR_CPPFLAGS)
+%.ni.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS) $(OC_INSTR_CPPFLAGS)
+%.ni.$(D): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS) $(OC_INSTR_CPPFLAGS)
 
-%_npic.$(O): OC_CFLAGS += $(SHAREDLIB_CFLAGS)
-%_npic.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS)
+%.npic.$(O): OC_CFLAGS += $(SHAREDLIB_CFLAGS)
+%.npic.$(O): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS)
+%.npic.$(D): OC_CPPFLAGS += $(OC_NATIVE_CPPFLAGS)
 
 # Compilation of C files
 
@@ -332,16 +339,35 @@ libasmrun_shared.$(SO): $(libasmrunpic_OBJECTS)
 # that corresponds to the name of the generated object file
 # (without the extension, which is added by the macro)
 define COMPILE_C_FILE
+ifneq "$(COMPUTE_DEPS)" "false"
+ifneq "$(1)" "%"
+# -MG would ensure that the dependencies are generated even if the files listed
+# in $$(GENERATED_HEADERS) haven't been assembled yet. However, this goes subtly
+# wrong if the user has the headers installed, as gcc will pick up a dependency
+# on those instead and the local ones will not be generated. For this reason, we
+# don't use -MG and instead include $(GENERATED_HEADERS) in the order only
+# dependencies to ensure that they exist before dependencies are computed.
+$(DEPDIR)/$(1).$(D): %.c | $(DEPDIR) $(GENERATED_HEADERS)
+	$$(DEP_CC) $$(OC_CPPFLAGS) $$(CPPFLAGS) $$< -MT \
+	  '$$*$(subst %,,$(1)).$(O)' -MF $$@
+endif
 $(1).$(O): %.c
-	$$(CC) -c $$(OC_CFLAGS) $$(OC_CPPFLAGS) $$(OUTPUTOBJ)$$@ $$<
+else
+$(1).$(O): %.c $(CONFIG_HEADERS) $(GENERATED_HEADERS) $(RUNTIME_HEADERS)
+endif
+	$$(CC) -c $$(OC_CFLAGS) $$(CFLAGS) $$(OC_CPPFLAGS) $$(CPPFLAGS) \
+	  $$(OUTPUTOBJ)$$@ $$<
 endef
 
-object_types := % %_b %_bd %_bi %_bpic %_n %_nd %_ni %_np %_npic
+object_types := % %.b %.bd %.bi %.bpic
+ifneq "$(NATIVE_COMPILER)" "false"
+object_types += %.n %.nd %.ni %.np %.npic
+endif
 
 $(foreach object_type, $(object_types), \
   $(eval $(call COMPILE_C_FILE,$(object_type))))
 
-dynlink_%.$(O): OC_CPPFLAGS += $(STDLIB_CPP_FLAG)
+dynlink.%.$(O): OC_CPPFLAGS += $(STDLIB_CPP_FLAG)
 
 $(foreach object_type,$(subst %,,$(object_types)), \
   $(eval dynlink$(object_type).$(O): $(ROOTDIR)/Makefile.config))
@@ -359,10 +385,10 @@ $(foreach object_type,$(subst %,,$(object_types)), \
 	$(ASPP) $(ASPPFLAGS) $(SHAREDLIB_CFLAGS) -o $@ $<
 
 domain_state64.inc: caml/domain_state.tbl gen_domain_state64_inc.awk
-	awk -f gen_domain_state64_inc.awk $< > $@
+	$(AWK) -f ./gen_domain_state64_inc.awk $< > $@
 
 domain_state32.inc: caml/domain_state.tbl gen_domain_state32_inc.awk
-	awk -f gen_domain_state32_inc.awk $< > $@
+	$(AWK) -f ./gen_domain_state32_inc.awk $< > $@
 
 amd64nt.obj: amd64nt.asm domain_state64.inc
 	$(ASM)$@ $(ASMFLAGS) $<
@@ -375,37 +401,15 @@ i386nt.obj: i386nt.asm domain_state32.inc
 
 # Dependencies
 
-.PHONY: depend
-ifeq "$(TOOLCHAIN)" "msvc"
-depend:
-	$(error Dependencies cannot be regenerated using the MSVC ports)
-else
-
-NATIVE_DEP_CPPFLAGS := $(OC_CPPFLAGS) $(OC_NATIVE_CPPFLAGS)
-BYTECODE_DEP_FILES := $(BYTECODE_C_SOURCES) $(other_files) instrtrace.c
-NATIVE_DEP_FILES := $(NATIVE_C_SOURCES) $(other_files)
-
-depend: *.c caml/opnames.h caml/jumptbl.h caml/version.h
-	$(CC) -MM $(OC_CPPFLAGS) $(BYTECODE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_b.$$(O)/' > .depend
-	$(CC) -MM $(OC_CPPFLAGS) $(OC_DEBUG_CPPFLAGS) \
-                  $(BYTECODE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_bd.$$(O)/' >> .depend
-	$(CC) -MM $(OC_CPPFLAGS) $(OC_INSTR_CPPFLAGS) \
-               $(BYTECODE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_bi.$$(O)/' >> .depend
-	$(CC) -MM $(OC_CPPFLAGS) $(BYTECODE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_bpic.$$(O)/' >> .depend
-	$(CC) -MM $(NATIVE_DEP_CPPFLAGS) $(NATIVE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_n.$$(O)/' >> .depend
-	$(CC) -MM $(NATIVE_DEP_CPPFLAGS) $(OC_DEBUG_CPPFLAGS) \
-                  $(NATIVE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_nd.$$(O)/' >> .depend
-	$(CC) -MM $(NATIVE_DEP_CPPFLAGS) $(OC_INSTR_CPPFLAGS) \
-                  $(NATIVE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_ni.$$(O)/' >> .depend
-	$(CC) -MM $(NATIVE_DEP_CPPFLAGS) $(NATIVE_DEP_FILES) | \
-	  sed -e 's/\([^.]*\)\.o/\1_npic.$$(O)/' >> .depend
+DEP_FILES := $(addsuffix .b, $(basename $(BYTECODE_C_SOURCES) instrtrace))
+ifneq "$(NATIVE_COMPILER)" "false"
+DEP_FILES += $(addsuffix .n, $(basename $(NATIVE_C_SOURCES)))
 endif
+DEP_FILES += $(addsuffix d, $(DEP_FILES)) \
+             $(addsuffix i, $(DEP_FILES)) \
+             $(addsuffix pic, $(DEP_FILES))
+DEP_FILES := $(addsuffix .$(D), $(DEP_FILES))
 
-include .depend
+ifeq "$(COMPUTE_DEPS)" "true"
+include $(addprefix $(DEPDIR)/, $(DEP_FILES))
+endif

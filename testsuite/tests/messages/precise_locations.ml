@@ -19,7 +19,7 @@ function (x :
 Line 2, characters 1-4:
 2 | #bar) -> ();;
      ^^^
-Error: Unbound class bar
+Error: Unbound class type bar
 |}];;
 
 function
@@ -86,7 +86,7 @@ end);;
 Line 2, characters 0-9:
 2 | open List
     ^^^^^^^^^
-Error (warning 33): unused open Stdlib.List.
+Error (warning 33 [unused-open]): unused open Stdlib.List.
 |}];;
 
 type unknown += Foo;;

@@ -13,6 +13,8 @@
 (*                                                                        *)
 (**************************************************************************)
 
+exception Exit_with_status of int
+
 val module_of_filename : string -> string -> string
 
 val output_prefix : string -> string
@@ -33,6 +35,8 @@ val last_include_dirs : string list ref
 val get_objfiles : with_ocamlparam:bool -> string list
 val last_objfiles : string list ref
 val first_objfiles : string list ref
+
+val stop_early : bool ref
 
 type filename = string
 
@@ -67,7 +71,8 @@ val intf : string -> unit
 
 val process_deferred_actions :
   Format.formatter *
-  (source_file:string -> output_prefix:string -> unit) *
+  (start_from:Clflags.Compiler_pass.t ->
+   source_file:string -> output_prefix:string -> unit) *
   (* compile implementation *)
   (source_file:string -> output_prefix:string -> unit) *
   (* compile interface *)

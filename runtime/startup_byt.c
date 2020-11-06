@@ -17,6 +17,7 @@
 
 /* Start-up code */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 #include "caml/debugger.h"
 #include "caml/domain.h"
 #include "caml/dynlink.h"
+#include "caml/eventlog.h"
 #include "caml/exec.h"
 #include "caml/fail.h"
 #include "caml/fix_code.h"
@@ -109,6 +111,8 @@ static int read_trailer(int fd, struct exec_trailer *trail)
       ? 0 : WRONG_MAGIC;
 }
 
+enum caml_byte_program_mode caml_byte_program_mode = STANDARD;
+
 int caml_attempt_open(char_os **name, struct exec_trailer *trail,
                       int do_open_script)
 {
@@ -125,7 +129,10 @@ int caml_attempt_open(char_os **name, struct exec_trailer *trail,
   if (fd == -1) {
     caml_stat_free(truename);
     caml_gc_message(0x100, "Cannot open file\n");
-    return FILE_NOT_FOUND;
+    if (errno == EMFILE)
+      return NO_FDS;
+    else
+      return FILE_NOT_FOUND;
   }
   if (!do_open_script) {
     err = read (fd, buf, 2);
@@ -316,8 +323,6 @@ static int parse_command_line(char_os **argv)
   return i;
 }
 
-extern void caml_init_ieee_floats (void);
-
 #ifdef _WIN32
 extern void caml_signal_thread(void * lpParam);
 #endif
@@ -328,8 +333,6 @@ extern void caml_signal_thread(void * lpParam);
 extern void caml_install_invalid_parameter_handler();
 
 #endif
-
-extern int caml_ensure_spacetime_dot_o_is_included;
 
 /* Main entry point when loading code from a file */
 
@@ -343,8 +346,6 @@ CAMLexport void caml_main(char_os **argv)
   char_os * shared_lib_path, * shared_libs;
   char_os * exe_name, * proc_self_exe;
 
-  caml_ensure_spacetime_dot_o_is_included++;
-
   /* Initialize the domain */
   caml_init_domain();
 
@@ -353,15 +354,13 @@ CAMLexport void caml_main(char_os **argv)
   caml_verb_gc = 0x3F;
 #endif
   caml_parse_ocamlrunparam();
+  CAML_EVENTLOG_INIT();
 #ifdef DEBUG
   caml_gc_message (-1, "### OCaml runtime: debug mode ###\n");
 #endif
   if (!caml_startup_aux(/* pooling */ caml_cleanup_on_exit))
     return;
 
-  /* Machine-dependent initialization of the floating-point hardware
-     so that it behaves as much as possible as specified in IEEE */
-  caml_init_ieee_floats();
   caml_init_locale();
 #if defined(_MSC_VER) && __STDC_SECURE_LIB__ >= 200411L
   caml_install_invalid_parameter_handler();
@@ -445,7 +444,9 @@ CAMLexport void caml_main(char_os **argv)
   /* Load the globals */
   caml_seek_section(fd, &trail, "DATA");
   chan = caml_open_descriptor_in(fd);
+  Lock(chan);
   caml_global_data = caml_input_val(chan);
+  Unlock(chan);
   caml_close_channel(chan); /* this also closes fd */
   caml_stat_free(trail.section);
   /* Ensure that the globals are in the major heap. */
@@ -453,6 +454,8 @@ CAMLexport void caml_main(char_os **argv)
   caml_oldify_mopup ();
   /* Initialize system libraries */
   caml_sys_init(exe_name, argv + pos);
+  /* Load debugging info, if b>=2 */
+  caml_load_main_debug_info();
 #ifdef _WIN32
   /* Start a thread to handle signals */
   if (caml_secure_getenv(T("CAMLSIGPIPE")))
@@ -491,6 +494,7 @@ CAMLexport value caml_startup_code_exn(
   caml_verb_gc = 0x3F;
 #endif
   caml_parse_ocamlrunparam();
+  CAML_EVENTLOG_INIT();
 #ifdef DEBUG
   caml_gc_message (-1, "### OCaml runtime: debug mode ###\n");
 #endif
@@ -499,7 +503,6 @@ CAMLexport value caml_startup_code_exn(
   if (!caml_startup_aux(pooling))
     return Val_unit;
 
-  caml_init_ieee_floats();
   caml_init_locale();
 #if defined(_MSC_VER) && __STDC_SECURE_LIB__ >= 200411L
   caml_install_invalid_parameter_handler();
@@ -544,6 +547,8 @@ CAMLexport value caml_startup_code_exn(
   caml_section_table_size = section_table_size;
   /* Initialize system libraries */
   caml_sys_init(exe_name, argv);
+  /* Load debugging info, if b>=2 */
+  caml_load_main_debug_info();
   /* Execute the program */
   caml_debugger(PROGRAM_START, Val_unit);
   return caml_interprete(caml_start_code, caml_code_size);
